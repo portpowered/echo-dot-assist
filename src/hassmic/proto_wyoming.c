@@ -18,12 +18,30 @@ static void send_event(const char *type, const char *data, const void *payload, 
         shutdown(client, SHUT_RDWR);        /* reader thread notices and cleans up */
 }
 
+/* Lock held.  The active wake word's id ("computer-en-US", the firmware's "alexa"), as a JSON string body: ids are
+ * model directory names, anything outside [A-Za-z0-9._-] becomes '_' */
+static const char *active_word(char *out, size_t cap)
+{
+    const struct core_wake_word *list;
+    int n = core_wake_words(&list), i = core_wake_word(-1);
+    const char *id = i >= 0 && i < n ? list[i].id : "alexa";
+    size_t k = 0;
+    for (; id[k] && k + 1 < cap; k++) {
+        char c = id[k];
+        out[k] = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+                 c == '-' ? c : '_';
+    }
+    out[k] = 0;
+    return out;
+}
+
 static void start(void)
 {
-    char data[256];
+    char data[256], word[64];
     snprintf(data, sizeof data,
-             "{\"start_stage\":\"%s\",\"end_stage\":\"tts\",\"restart_on_end\":false%s}",
-             core_local_wake ? "asr" : "wake", core_local_wake ? ",\"wake_word_name\":\"alexa\"" : "");
+             "{\"start_stage\":\"%s\",\"end_stage\":\"tts\",\"restart_on_end\":false%s%s%s}",
+             core_local_wake ? "asr" : "wake", core_local_wake ? ",\"wake_word_name\":\"" : "",
+             core_local_wake ? active_word(word, sizeof word) : "", core_local_wake ? "\"" : "");
     send_event("run-pipeline", data, NULL, 0);
 }
 
@@ -38,16 +56,22 @@ static void audio(const void *pcm, size_t len)
 
 static void played(void) { send_event("played", NULL, NULL, 0); }
 
+/* Lock held.  The effective mute (privacy latch or soft mute, core_muted()), which Wyoming has no event for: our own
+ * "hassmic-mute" event, once as a snapshot when a client connects and again on every change.  Home Assistant ignores
+ * event types it does not know */
+static void mute_changed(int muted) { send_event("hassmic-mute", muted ? "{\"muted\":true}" : "{\"muted\":false}", NULL, 0); }
+
 static void send_info(void)
 {
-    char data[1024];
+    char data[1024], word[64], active[80] = "";
+    if (core_local_wake) snprintf(active, sizeof active, "\"%s\"", active_word(word, sizeof word));
     snprintf(data, sizeof data,
              "{\"asr\":[],\"tts\":[],\"handle\":[],\"intent\":[],\"wake\":[],\"mic\":[],\"snd\":[],"
              "\"satellite\":{\"name\":\"%s\",\"attribution\":{\"name\":\"hassmic\",\"url\":\"\"},"
              "\"installed\":true,\"description\":\"%s with Amazon audio front end\",\"version\":\"" VERSION "\","
              "\"area\":null,\"has_vad\":false,\"active_wake_words\":[%s],\"max_active_wake_words\":1,"
              "\"supports_trigger\":true}}",
-             core_name, board.model, core_local_wake ? "\"alexa\"" : "");
+             core_name, board.model, active);
     send_event("info", data, NULL, 0);
 }
 
@@ -91,7 +115,7 @@ static void serve(int fd)
     struct wy_reader rd; static struct wy_event ev;
     if (wy_reader_init(&rd, fd) < 0) return;
     pthread_mutex_lock(&core_lock);
-    client = fd; core_link(1, 0);
+    client = fd; core_link(1, 0); mute_changed(core_muted());
     pthread_mutex_unlock(&core_lock);
     fprintf(stderr, "client connected\n");
 
@@ -111,4 +135,4 @@ static void print_mdns(void)
            "  <service><type>_wyoming._tcp</type><port>%d</port></service>\n</service-group>\n", core_name, core_port);
 }
 
-const struct proto proto_wyoming = { "wyoming", 16700, 0, serve, start, audio, NULL, NULL, played, NULL, NULL, print_mdns, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+const struct proto proto_wyoming = { "wyoming", 16700, 0, serve, start, audio, NULL, NULL, played, NULL, mute_changed, print_mdns, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };

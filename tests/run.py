@@ -63,6 +63,7 @@ TESTS = [
     ("ring-designs", [PY, "tests/fake_web_ring.py"]),
     ("artifacts", [PY, "tests/fake_web_artifacts.py"]),
     ("wyoming", [PY, "tests/fake_ha.py"]),
+    ("wyoming-mute", [PY, "tests/wyoming_mute.py"]),
     ("talk-duplex", [PY, "tests/fake_talk_duplex.py"]),
     ("screen", [PY, "tests/fake_screen.py"]),
     ("screen-9", [PY, "tests/fake_screen.py", "--legacy"]),
