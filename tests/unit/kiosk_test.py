@@ -99,12 +99,16 @@ def cmd(a):
 a = [x for x in sys.argv[1:] if x not in ("-w", "--noflush")]
 if sys.argv[0].endswith("-restore"):
     for l in sys.stdin.read().split("\n"):
-        if l.startswith(":hassmic_out"): s["chains"] = ["hassmic_out"]; cmd(["-F", "hassmic_out"])
-        elif l.startswith(":INPUT"): s["pol"] = l.split()[1]
+        if l.startswith(":INPUT"): s["pol"] = l.split()[1]
+        elif l[:1] == ":" and l[1:].split()[0] not in ("OUTPUT", "FORWARD"):
+            c = l[1:].split()[0]; s["chains"] = [x for x in s["chains"] if x != c] + [c]; cmd(["-F", c])
         elif l[:2] in ("-A", "-D", "-I"): cmd(l.split())
 elif a[:1] == ["-S"]:
-    if a[1:] == ["hassmic_out"]: print("\n".join(["-N hassmic_out"] + [r for r in s["rules"] if r.startswith("-A hassmic_out ")]))
-    elif a[1:] == ["OUTPUT"]: print("\n".join(["-P OUTPUT ACCEPT"] + [r for r in s["rules"] if r.startswith("-A OUTPUT ")]))
+    if a[1:] == ["OUTPUT"]: print("\n".join(["-P OUTPUT ACCEPT"] + [r for r in s["rules"] if r.startswith("-A OUTPUT ")]))
+    elif a[1:] == ["INPUT"]: print("\n".join(["-P INPUT " + s["pol"]] + [r for r in s["rules"] if r.startswith("-A INPUT ")]))
+    elif a[1:]:
+        if a[1] not in s["chains"]: sys.exit(1)
+        print("\n".join(["-N " + a[1]] + [r for r in s["rules"] if r.startswith("-A " + a[1] + " ")]))
     else: print("\n".join(["-P INPUT " + s["pol"]] + s["rules"]))
     sys.exit(0)
 else: cmd(a)
@@ -158,6 +162,77 @@ with tempfile.TemporaryDirectory() as tmp:
         state(False, "kiosk_internet=off\n")
         o = firewall(tmp, "wrong || echo NOTICED")
         check(f"{name}: uninstalled with internet off: its ports alone noticed", "NOTICED" in o and "ports admitted" in o, o)
+
+# ------------------------------------------------------------------ LISTEN_FROM: the protocol port from named hosts only
+# Stock admits 16384-32767 ahead of anything appended, so the limit is a chain of its own, hassmic_in, jumped to first.
+def rin(r): return [x for x in r if x.startswith("-A hassmic_in ")]
+def first_in(r): return next(x for x in r if x.startswith("-A INPUT "))
+LOAD_W = "kiosk_state; listen_state; {0} iptables; {0} ip6tables; wrong && echo RIGHT"
+with tempfile.TemporaryDirectory() as tmp:
+    os.makedirs(tmp + "/hassmic/state"); os.makedirs(tmp + "/system")
+    for f in ("/device.conf", "/hassmic/state/config", "/system/packages.list"): open(tmp + f, "w").close()
+    def hconf(text): open(tmp + "/hassmic/hassmic.conf", "w").write(text)
+    def ipt(v=""): return json.load(open(f"{tmp}/ip{v}tables.json"))["rules"]
+    W = "-i wlan0 -p tcp -m tcp --dport {} -j "
+    for name in ("load_once", "load_each"):
+        for j in ("iptables.json", "ip6tables.json"):
+            if os.path.exists(f"{tmp}/{j}"): os.unlink(f"{tmp}/{j}")
+        load = LOAD_W.format(name)
+        hconf("PROTO=wyoming\nARGS=\"-D -E\"\n")
+        o = firewall(tmp, load)
+        check(f"{name}: not set: hassmic_in empty, jumped to first, the check agrees", "RIGHT" in o and rin(ipt()) == []
+              and first_in(ipt()) == "-A INPUT -j hassmic_in", o + str(ipt()[:3]))
+        hconf("PROTO=wyoming\nARGS=\"-D -E\"\nLISTEN_FROM=\"192.168.1.20\"\n")
+        o = firewall(tmp, "listen_state; wrong || echo NOTICED")
+        check(f"{name}: set: noticed by the check", "NOTICED" in o and "hassmic_in is not as loaded" in o, o)
+        o = firewall(tmp, load)
+        want = ["-A hassmic_in -s 192.168.1.20/32 " + W.format(16700) + "RETURN", "-A hassmic_in " + W.format(16700) + "DROP"]
+        check(f"{name}: wyoming: 16700 from 192.168.1.20 only, the check agrees", "RIGHT" in o and rin(ipt()) == want, o + str(rin(ipt())))
+        check(f"{name}: one jump, first in INPUT, ahead of stock's range", ipt().count("-A INPUT -j hassmic_in") == 1
+              and ipt().index("-A INPUT -j hassmic_in") < ipt().index("-A INPUT -i wlan0 -p tcp -m tcp --dport 16384:32767 -j ACCEPT"), str(ipt()))
+        check(f"{name}: nothing of it in IPv6", rin(ipt("6")) == [] and first_in(ipt("6")) == "-A INPUT -j hassmic_in", str(ipt("6")[:3]))
+        o = firewall(tmp, "iptables -w -I INPUT 1 -j stock_in; listen_state; wrong || echo NOTICED")
+        check(f"{name}: a chain stock puts first: noticed", "NOTICED" in o and "hassmic_in is not first in INPUT" in o, o)
+        o = firewall(tmp, load)
+        check(f"{name}: and put first again, once", "RIGHT" in o and first_in(ipt()) == "-A INPUT -j hassmic_in"
+              and ipt().count("-A INPUT -j hassmic_in") == 1, o + str([x for x in ipt() if x.startswith("-A INPUT ")][:3]))
+        hconf("PROTO=wyoming\nLISTEN_FROM='192.168.1.20 10.0.0.7'\n")
+        o = firewall(tmp, load)
+        check(f"{name}: two hosts, single quotes", "RIGHT" in o and rin(ipt()) == [
+            "-A hassmic_in -s 192.168.1.20/32 " + W.format(16700) + "RETURN", "-A hassmic_in -s 10.0.0.7/32 " + W.format(16700) + "RETURN",
+            "-A hassmic_in " + W.format(16700) + "DROP"], str(rin(ipt())))
+        hconf("LISTEN_FROM=192.168.1.20\n")
+        o = firewall(tmp, load)
+        check(f"{name}: esphome by default: 26053", "RIGHT" in o and rin(ipt())[-1] == "-A hassmic_in " + W.format(26053) + "DROP", str(rin(ipt())))
+        hconf("PROTO=wyoming\nARGS=\"-D -p 16701 -E\"\nLISTEN_FROM=192.168.1.20\n")
+        firewall(tmp, load)
+        check(f"{name}: ARGS -p moves it", rin(ipt())[-1] == "-A hassmic_in " + W.format(16701) + "DROP", str(rin(ipt())))
+        hconf("PROTO=wyoming\nARGS=\"-D -p16702\"\nLISTEN_FROM=192.168.1.20\n")
+        firewall(tmp, load)
+        check(f"{name}: ARGS -pN too", rin(ipt())[-1] == "-A hassmic_in " + W.format(16702) + "DROP", str(rin(ipt())))
+        hconf("PROTO=wyoming\nARGS=\"-D -p\"\nLISTEN_FROM=192.168.1.20\n")
+        o = firewall(tmp, load)
+        check(f"{name}: a -p with nothing after it: 16700, no error", "RIGHT" in o and rin(ipt())[-1] == "-A hassmic_in " + W.format(16700) + "DROP", o)
+        for bad in ("192.168.1.300", "192.168.001.20", "echo.lan", "192.168.1", "192.168.1.20/24", "1.2.3.4.5"):
+            hconf(f"PROTO=wyoming\nLISTEN_FROM=\"{bad}\"\n")
+            o = firewall(tmp, load)
+            check(f"{name}: {bad!r} admits nobody, the port refused to all", "RIGHT" in o and rin(ipt()) == ["-A hassmic_in " + W.format(16700) + "DROP"], o + str(rin(ipt())))
+        hconf("PROTO=wyoming\nLISTEN_FROM=\"echo.lan 192.168.1.20\"\n")
+        firewall(tmp, load)
+        check(f"{name}: a bad word beside an address: the address alone", rin(ipt()) == want, str(rin(ipt())))
+        o = firewall(tmp, "apply")
+        check(f"{name}: apply says which word it could not take", "!! LISTEN_FROM in hassmic.conf: not an IPv4 address: echo.lan" in o, o)
+        hconf("PROTO=wyoming\nLISTEN_FROM=\"nope\"\n")
+        o = firewall(tmp, "apply")
+        check(f"{name}: and that nobody at all is admitted", "admits nobody else: nobody at all" in o, o)
+        hconf("PROTO=wyoming\n")
+        o = firewall(tmp, "listen_state; wrong || echo NOTICED")
+        check(f"{name}: taken out: noticed", "NOTICED" in o and "hassmic_in is not as loaded" in o, o)
+        o = firewall(tmp, load)
+        check(f"{name}: taken out: the chain empties, the check agrees", "RIGHT" in o and rin(ipt()) == [], o)
+        os.unlink(tmp + "/hassmic/hassmic.conf")
+        o = firewall(tmp, load)
+        check(f"{name}: no hassmic.conf: empty, nothing said", "RIGHT" in o and rin(ipt()) == [] and "!!" not in o, o)
 
 # ------------------------------------------------------------------ the DLNA renderer (issue #109)
 # /proc/net/{tcp,tcp6,udp,udp6} as the kernel prints them: a header, then sl, local, remote, state, queues, timer,

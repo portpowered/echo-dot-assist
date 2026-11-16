@@ -10,6 +10,8 @@
 #   ARGS=""                     optional extra hassmic arguments
 #   MODE=stock-online           optional: stock Alexa with internet, e.g. to let it fetch a wake-word model.  hassmic stays
 #                               off, nothing is stopped or blocked except firmware updates (lockdown.sh ota-only)
+#   LISTEN_FROM="a.b.c.d"       optional: the only IPv4 addresses (separated by spaces) that may connect to the protocol's
+#                               port (16700 or 26053); every other is refused (read by lockdown.sh).  Without it: open to the network
 #   ADB_WIFI=1                  optional: leave adb over Wi-Fi open (root shell for the whole network, no password; read
 #                               by lockdown.sh).  Without it: closed, opened for 30 min from the settings page (action button)
 umask 022                                   # init gives us 077; what we create must be readable by the daemon's user

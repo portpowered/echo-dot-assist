@@ -17,6 +17,7 @@
 # Besides its own chain the script keeps what the satellite needs of stock's firewall (see keep below): stock's rules can
 # be missing after a boot, and then the Echo is cut off with everything on it running.
 # It also closes adb over Wi-Fi (see adb_gate below): in every mode, and on every run except "services" and "check".
+# With LISTEN_FROM in hassmic.conf it admits hassmic's protocol port from those addresses only (see listen_state below).
 # hassmic itself may connect anywhere: it creates its outgoing sockets with filesystem group NET_GID (runas -r in main.sh
 # and run.sh, setfsgid in net.c; the owner match checks that group) and only fetches what Home
 # Assistant (encrypted, paired connection) or Music Assistant send it.  That can be a public host name, a Tailscale address
@@ -210,6 +211,51 @@ rules() {
     echo "-A hassmic_out -j DROP"
 }
 
+# hassmic's protocol port asks for no login: whoever reaches Wyoming's 16700 runs the satellite, hears its microphone
+# and plays on its speaker (ESPHome's 26053 has its encryption key, but answers anybody until then).  hassmic.conf's
+# LISTEN_FROM names the IPv4 addresses that may connect to that port, whichever protocol PROTO picks (one or more,
+# separated by spaces, each a single host as in LISTEN_FROM="192.168.1.20"); the port is refused to every other.  Not
+# set: open to the whole network, as before.  In hassmic.conf and not state/: that file is root's, so a hassmic taken
+# over cannot open its own port again.  A word that is not an address admits nobody: a typo must not leave the port
+# open.  Its own chain, hassmic_in, jumped to first in INPUT, because stock's rules admit 16384-32767 ahead of anything
+# appended (keep).  IPv4 only: IPv6 admits none of our ports (keep), and hassmic only speaks IPv4.
+# an address as "iptables -S" prints it (no leading zero, no prefix): what wrong() compares
+valid4() {
+    local IFS=. o
+    set -- $1
+    [ $# = 4 ] || return 1
+    for o; do case $o in ''|*[!0-9]*|0?*) return 1;; esac; [ $o -le 255 ] || return 1; done
+}
+# a value of hassmic.conf without the quotes around it, in u
+unq() { case $1 in \"*\"|\'*\') u=${1#?}; u=${u%?};; *) u=$1;; esac; }
+# LFROM: the admitted addresses (each /32); LBAD: the words that were not addresses; LPORT: the protocol's port (main.sh
+# starts hassmic with -P $PROTO $ARGS: wyoming 16700, anything else ESPHome's 26053, unless ARGS move it with -p).
+# Read by the shell: no fork every 5 s.
+listen_state() {
+    local l v= pr= ar= a
+    LFROM=; LBAD=; LPORT=26053
+    [ -f $HCONF ] || return 0
+    while IFS= read -r l || [ -n "$l" ]; do
+        case $l in LISTEN_FROM=*) v=${l#LISTEN_FROM=};; PROTO=*) pr=${l#PROTO=};; ARGS=*) ar=${l#ARGS=};; esac
+    done 2>/dev/null < $HCONF
+    unq "$v"; v=$u; unq "$pr"; pr=$u; unq "$ar"; ar=$u
+    [ "$pr" = wyoming ] && LPORT=16700
+    set -- $ar
+    while [ $# -gt 0 ]; do
+        case $1 in -p) a=$2; [ $# -gt 1 ] && shift;; -p*) a=${1#-p};; *) a=;; esac
+        case $a in ''|*[!0-9]*) ;; *) LPORT=$a;; esac
+        [ $# -gt 0 ] && shift                           # "-p" last: its shift took the only one left
+    done
+    for a in $v; do if valid4 "$a"; then LFROM="$LFROM $a/32"; else LBAD="$LBAD $a"; fi; done
+    return 0
+}
+# hassmic_in as it has to be, for $1 = iptables or ip6tables: empty unless LISTEN_FROM is set
+rules_in() {
+    [ $1 = iptables ] && [ -z "$OTA_ONLY" ] && [ -n "$LFROM$LBAD" ] || return 0
+    for a in $LFROM; do echo "-A hassmic_in -s $a -i $WLAN -p tcp -m tcp --dport $LPORT -j RETURN"; done
+    echo "-A hassmic_in -i $WLAN -p tcp -m tcp --dport $LPORT -j DROP"
+}
+
 # Stock's rules that the satellite cannot do without, in the same wording.  firewall.sh loads them at sys.boot_completed
 # (INPUT and OUTPUT policy DROP, then these among a hundred others), but it calls iptables without -w, and a call that
 # meets another iptables fails with "Another app is currently holding the xtables lock": that rule is then simply not
@@ -324,10 +370,13 @@ adb_gate() {
 load_once() {
     all=$($1 -w -S 2>/dev/null)
     in=$(
-        echo "*filter"; echo ":INPUT DROP [0:0]"; echo ":hassmic_out - [0:0]"
+        echo "*filter"; echo ":INPUT DROP [0:0]"; echo ":hassmic_out - [0:0]"; echo ":hassmic_in - [0:0]"
         rules $1
+        rules_in $1
         echo "$all" | while read -r r; do [ "$r" = "-A OUTPUT -j hassmic_out" ] && echo "-D OUTPUT -j hassmic_out"; done
         echo "-I OUTPUT 1 -j hassmic_out"
+        echo "$all" | while read -r r; do [ "$r" = "-A INPUT -j hassmic_in" ] && echo "-D INPUT -j hassmic_in"; done
+        echo "-I INPUT 1 -j hassmic_in"
         missing $1 "$all"
         [ -n "$ADB" ] || echo "$all" | while read -r r; do [ "$r" = "-A $ADB_IN" ] && echo "-D $ADB_IN"; done
         [ -n "$KIOSK" ] || echo "$all" | while read -r r; do [ "$r" = "-A $KIOSK_IN" ] && echo "-D $KIOSK_IN"; done
@@ -351,6 +400,11 @@ load_each() {
     done
     while $1 -w -D OUTPUT -j hassmic_out 2>/dev/null; do :; done
     $1 -w -I OUTPUT 1 -j hassmic_out
+    $1 -w -N hassmic_in 2>/dev/null
+    $1 -w -F hassmic_in
+    rules_in $1 | while read -r r; do $1 -w $r || echo "!! PROTOCOL PORT NOT LIMITED ($1): $r"; done
+    while $1 -w -D INPUT -j hassmic_in 2>/dev/null; do :; done
+    $1 -w -I INPUT 1 -j hassmic_in
     missing $1 "$($1 -w -S)" | while read -r r; do $1 -w $r || echo "!! rule not loaded ($1): $r"; done
     [ -n "$ADB" ] || while $1 -w -D $ADB_IN 2>/dev/null; do :; done
     [ -n "$KIOSK" ] || while $1 -w -D $KIOSK_IN 2>/dev/null; do :; done
@@ -359,7 +413,8 @@ load_each() {
 }
 load() { load_once $1 2>/dev/null || load_once $1 || { echo "!! $1-restore failed twice: loading rule by rule"; load_each $1; }; }
 apply() {
-    DNS=$(resolvers); kiosk_state
+    DNS=$(resolvers); kiosk_state; listen_state
+    [ -z "$LBAD" ] || echo "!! LISTEN_FROM in hassmic.conf: not an IPv4 address:$LBAD (port $LPORT admits nobody else$([ -n "$LFROM" ] || echo ": nobody at all"))"
     [ -z "$KSSDP_BY" ] || echo "Kiosk Satellite's DLNA renderer: UDP 1900 not admitted, uid$KSSDP_BY listens there too"
     load iptables
     if [ -n "$HAVE6" ]; then load ip6tables; else v6off; fi
@@ -376,9 +431,13 @@ apply() {
 # first in OUTPUT, INPUT policy DROP, each of stock's rules we need, the adb port not admitted unless it is open, nor
 # 2330 unless in Kiosk Satellite mode, nor a port of the app's that is not wanted now; without ip6tables, IPv6 off on every interface.
 wrong() {
-    kiosk_state
+    kiosk_state; listen_state
     for t in iptables ${HAVE6:+ip6tables}; do
         [ "$($t -w -S hassmic_out 2>/dev/null)" = "-N hassmic_out$NL$(rules $t)" ] || { echo "$t: hassmic_out is not as loaded"; return 1; }
+        r=$(rules_in $t)
+        [ "$($t -w -S hassmic_in 2>/dev/null)" = "-N hassmic_in${r:+$NL$r}" ] || { echo "$t: hassmic_in is not as loaded"; return 1; }
+        o=$($t -w -S INPUT 2>/dev/null)
+        case "${o#*"$NL"}$NL" in "-A INPUT -j hassmic_in$NL"*) ;; *) echo "$t: hassmic_in is not first in INPUT"; return 1;; esac
         o=$($t -w -S OUTPUT 2>/dev/null)                   # policy line, then its rules (cutting them out of the whole
         case "${o#*"$NL"}$NL" in "-A OUTPUT -j hassmic_out$NL"*) ;; *) echo "$t: hassmic_out is not first in OUTPUT"; return 1;; esac   # listing took mksh 0.9 s)
         all=$($t -w -S 2>/dev/null)
@@ -420,6 +479,7 @@ for s in $ALEXA_SERVICES $UPDATE_SERVICES $UPDATE_ONDEMAND $CLOUD_SERVICES; do s
 [ -n "$ALEXA_PROP" ] && setprop $ALEXA_PROP 0
 [ "$1" = services ] && exit 0
 echo "egress limited to local addresses$([ -n "$HAVE6" ] || echo ", IPv6 off (no ip6tables)")"; iptables -w -S hassmic_out
+[ -z "$LFROM$LBAD" ] || { echo "port $LPORT ($([ $LPORT = 16700 ] && echo Wyoming || echo ESPHome)) only from:${LFROM:- nobody}"; iptables -w -S hassmic_in; }
 
 # Re-apply as well when the resolvers change (other network, new DHCP lease).
 [ "$1" = watch ] && while sleep 5; do
