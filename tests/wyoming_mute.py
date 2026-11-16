@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The effective mute over Wyoming (proto_wyoming.c) against build/hassmic-host: Wyoming has no mute event, so hassmic
-sends its own "hassmic-mute" {"muted": bool}, once when a client connects and again on every change.  The mute key
-(KEY_MUTE on the keypad, the host's stand-in for the privacy latch) toggles it; a client connecting while muted is told
-so straight away."""
-import json, os, socket, struct, subprocess, sys, tempfile, time
+sends its own "hassmic-mute" {"muted": bool} on every change.  A connection starts unmuted as the client sees it: one
+made while muted is told so straight away, an unmuted one hears nothing about it.  The mute key (KEY_MUTE on the keypad,
+the host's stand-in for the privacy latch) toggles it."""
+import json, os, select, socket, struct, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT, KEY_MUTE = 16797, 113
@@ -14,24 +14,38 @@ def check(cond, what):
     failed |= not cond
 
 class Client:
+    """Wyoming over a plain socket and a buffer of our own: a read can time out and the connection still be read after"""
     def __init__(self):
         for _ in range(100):
             try: self.s = socket.create_connection(("127.0.0.1", PORT), timeout=5); break
             except OSError: time.sleep(0.1)
         else: raise RuntimeError("no connection")
-        self.f = self.s.makefile("rb")
+        self.buf, self.end = b"", time.time() + 5
+    def fill(self):
+        left = self.end - time.time()
+        if left <= 0 or not select.select([self.s], [], [], left)[0]: raise TimeoutError
+        more = self.s.recv(65536)
+        if not more: raise EOFError
+        self.buf += more
+    def line(self):
+        while b"\n" not in self.buf: self.fill()
+        l, self.buf = self.buf.split(b"\n", 1); return l
+    def take(self, n):
+        while len(self.buf) < n: self.fill()
+        b, self.buf = self.buf[:n], self.buf[n:]; return b
     def send(self, t): self.s.sendall((json.dumps({"type": t}) + "\n").encode())
-    def recv(self):
-        h = json.loads(self.f.readline()); d = h.get("data") or {}
-        if h.get("data_length"): d = json.loads(self.f.read(h["data_length"]))
-        if h.get("payload_length"): self.f.read(h["payload_length"])
+    def recv(self, timeout=5):
+        self.end = time.time() + timeout
+        h = json.loads(self.line()); d = h.get("data") or {}
+        if h.get("data_length"): d = json.loads(self.take(h["data_length"]))
+        if h.get("payload_length"): self.take(h["payload_length"])
         return h["type"], d
     def mutes(self, n, timeout=5):
-        """the next n hassmic-mute values, skipping everything else"""
+        """the next n hassmic-mute values within timeout, skipping everything else"""
         got, end = [], time.time() + timeout
-        self.s.settimeout(timeout)
-        while len(got) < n and time.time() < end:
-            t, d = self.recv()
+        while len(got) < n:
+            try: t, d = self.recv(max(0.0, end - time.time()))
+            except TimeoutError: break
             if t == "hassmic-mute": got.append(d.get("muted"))
         return got
     def close(self): self.s.close()
@@ -50,7 +64,9 @@ def key(code):
     for v in (1, 0): os.write(keypad, struct.pack("llHHi", 0, 0, 1, code, v))     # struct input_event, EV_KEY
 try:
     c = Client()
-    check(c.mutes(1) == [False], "a client connecting is told the microphones are on")
+    c.send("describe")
+    check(c.recv()[0] == "info", "unmuted: describe is answered by info first, as before")
+    check(c.mutes(1, timeout=1) == [], "a client connecting unmuted hears nothing about mute")
     c.send("run-satellite"); time.sleep(0.3)
     key(KEY_MUTE)
     check(c.mutes(1) == [True], "the mute key: muted")

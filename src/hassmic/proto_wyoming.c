@@ -57,8 +57,9 @@ static void audio(const void *pcm, size_t len)
 static void played(void) { send_event("played", NULL, NULL, 0); }
 
 /* Lock held.  The effective mute (privacy latch or soft mute, core_muted()), which Wyoming has no event for: our own
- * "hassmic-mute" event, once as a snapshot when a client connects and again on every change.  Home Assistant ignores
- * event types it does not know */
+ * "hassmic-mute" event on every change.  A connection starts unmuted as far as the client knows, so one made while
+ * muted is told so first; an unmuted one hears nothing new, and clients that read events in a fixed order (Home
+ * Assistant ignores types it does not know anyway) see the stream as before */
 static void mute_changed(int muted) { send_event("hassmic-mute", muted ? "{\"muted\":true}" : "{\"muted\":false}", NULL, 0); }
 
 static void send_info(void)
@@ -115,7 +116,7 @@ static void serve(int fd)
     struct wy_reader rd; static struct wy_event ev;
     if (wy_reader_init(&rd, fd) < 0) return;
     pthread_mutex_lock(&core_lock);
-    client = fd; core_link(1, 0); mute_changed(core_muted());
+    client = fd; core_link(1, 0); if (core_muted()) mute_changed(1);
     pthread_mutex_unlock(&core_lock);
     fprintf(stderr, "client connected\n");
 
