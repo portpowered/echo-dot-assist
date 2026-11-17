@@ -2172,8 +2172,7 @@ static void *playback_thread(void *arg)
             if (wake_cut) wake_cut = 0;              /* cut for Home Assistant's wake word: its run is the request (core_remote_wake) */
             else if (keep_listening && connected && atomic_load(&streaming)) {
                 keep_listening = 0;
-                fprintf(stderr, "reply cut by the client: the run goes on listening (-D)
-");
+                fprintf(stderr, "reply cut by the client: the run goes on listening (-D)\n");
                 core_set_state(LISTENING);
             } else core_pipeline_finish();
             pthread_mutex_unlock(&core_lock);

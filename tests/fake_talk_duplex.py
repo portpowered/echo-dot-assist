@@ -149,7 +149,7 @@ async def keep_listening(duplex):
             while not RunPipeline.is_type((await asyncio.wait_for(client.read_event(), 5)).type): pass
             await client.write_event(AudioStart(rate=RATE, width=2, channels=1).event())
             for _ in range(5):                                   # half a second of reply, as it plays
-                await client.write_event(AudioChunk(rate=RATE, width=2, channels=1, audio=b" " * (RATE // 10)).event())
+                await client.write_event(AudioChunk(rate=RATE, width=2, channels=1, audio=b"\x01\x00" * (RATE // 10)).event())
                 await asyncio.sleep(0.1)
             await client.write_event(Event(type="hassmic-continue"))
             await client.write_event(AudioStop().event())
@@ -166,7 +166,7 @@ async def keep_listening(duplex):
             assert logged(log, "the run goes on listening (-D)"), "-D: no log line for the kept run"
             await client.write_event(AudioStart(rate=RATE, width=2, channels=1).event())     # the answer to the question
             for _ in range(3):
-                await client.write_event(AudioChunk(rate=RATE, width=2, channels=1, audio=b" " * (RATE // 10)).event())
+                await client.write_event(AudioChunk(rate=RATE, width=2, channels=1, audio=b"\x01\x00" * (RATE // 10)).event())
                 await asyncio.sleep(0.1)
             await client.write_event(AudioStop().event())
             _, played2, _ = await mic_chunks_during(client, 2)
