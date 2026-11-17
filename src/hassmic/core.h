@@ -178,6 +178,7 @@ void   core_tts_begin(unsigned rate, unsigned channels, int media);
 void   core_tts_data(const void *pcm, size_t len);
 void   core_tts_end(void);                                  /* drains, then played() and core_pipeline_finish() */
 void   core_tts_abandoned(void);                            /* lock held: a reply that began ends without core_tts_end() */
+int    core_continue(void);                                 /* lock held, -D: this reply's end ends no run (1: taken) */
 int    core_tts_flushing(void);                             /* barge-in: drop audio until core_tts_end() */
 void   core_tts_flush(void);
 size_t core_tts_queued(void);                               /* bytes not yet played: for back pressure */
