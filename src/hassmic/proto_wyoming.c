@@ -101,6 +101,11 @@ static void handle(const struct wy_event *ev)
         wy_json_int(ev->json, "rate", &rate); wy_json_int(ev->json, "channels", &ch); wy_json_int(ev->json, "width", &width);
         if (width != 2) fprintf(stderr, "play: unsupported sample width %ld, expect noise\n", width);
         core_tts_begin(rate, ch, 0);
+    } else if (!strcmp(t, "hassmic-continue")) {
+        /* -D, ours: the client cuts the reply for speech it heard and keeps listening to it.  Sent before the reply's
+         * audio-stop; that audio-stop's played ends no run (core_continue).  Ignored without -D or with no reply */
+        if (!core_continue()) fprintf(stderr, "hassmic-continue: no reply of a -D run to go on from, ignored
+");
     } else if (!strcmp(t, "audio-stop")) core_tts_end();
     else if (!strcmp(t, "error")) {
         char code[64] = "";

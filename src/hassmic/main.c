@@ -753,11 +753,15 @@ static int wake_wait;                               /* lock held: the run now op
 /* lock held: the reply is being cut for the wake word Home Assistant heard, whose run goes on as the request: the cut's
  * Q_STOP ends nothing.  Not cleared by a new run: that Q_STOP may come after the request has ended and the next begun */
 static int wake_cut;
+/* lock held: -D, the client cuts the reply now playing for speech it heard and keeps that speech (hassmic-continue,
+ * proto_wyoming.c): the reply's Q_STOP says played and the run goes on listening, the microphone streaming as it was.
+ * No new run, no lead-in, no sound: the question that cut the reply is still being said into this one */
+static int keep_listening;
 static int wake_fails;                              /* lock held: wake word runs Home Assistant failed during this reply */
 static int follow_up;                               /* lock held: the pipeline now starting is a follow-up to a question */
 static void pipeline_start(uint64_t from)    /* from: where the wake word that starts it ended, 0: not a wake word */
 {
-    run_over = 0; wake_wait = 0;
+    run_over = 0; wake_wait = 0; keep_listening = 0;
     quiet_abort = 0;
     mic_fresh = 1;
     replay_from = from;
@@ -1135,7 +1139,7 @@ void core_restart_after(void) { barge_in = 1; barge_from = 0; }
 
 void core_pipeline_finish(void)
 {
-    wake_fails = 0;
+    wake_fails = 0; keep_listening = 0;
     if (atomic_exchange(&streaming, 0) && connected) {
         /* a run that only listened for the wake word is aborted, not ended: a stale error from it must not reach the next */
         if (wake_wait && proto->cancel) proto->cancel();
@@ -2166,7 +2170,12 @@ static void *playback_thread(void *arg)
             atomic_store(&flush_playback, 0);       /* under the lock: a wake word between would cut the next reply */
             if (proto->played) proto->played();      /* also without a client: modules reset their state here */
             if (wake_cut) wake_cut = 0;              /* cut for Home Assistant's wake word: its run is the request (core_remote_wake) */
-            else core_pipeline_finish();
+            else if (keep_listening && connected && atomic_load(&streaming)) {
+                keep_listening = 0;
+                fprintf(stderr, "reply cut by the client: the run goes on listening (-D)
+");
+                core_set_state(LISTENING);
+            } else core_pipeline_finish();
             pthread_mutex_unlock(&core_lock);
             break;
         }
@@ -2192,6 +2201,14 @@ void core_tts_end(void) { q_push(Q_STOP, 0, 0, 0, NULL, 0); }
 /* lock held.  cancel() let go of a fetch after its audio began: no Q_STOP of its own follows (one would end the run
  * that cancelled it, or close the next reply), so none is left to swallow for the wake word's cut either */
 void core_tts_abandoned(void) { wake_cut = 0; }
+/* lock held.  -D: the client (it has the microphone through the reply) cuts this reply for speech it heard; its
+ * audio-stop follows.  Only for a run that is streaming and speaking: anything else has no reply to go on from */
+int core_continue(void)
+{
+    if (!core_duplex || !atomic_load(&streaming) || state != SPEAKING) return 0;
+    keep_listening = 1;
+    return 1;
+}
 int  core_tts_flushing(void) { return atomic_load(&flush_playback); }
 void core_tts_flush(void) { atomic_store(&flush_playback, 1); }
 

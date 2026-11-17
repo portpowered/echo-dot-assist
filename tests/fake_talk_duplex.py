@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """-D (duplex) over Wyoming against build/hassmic-host: the microphone keeps streaming while a reply plays, and the run
 ends at audio-stop as before.  Without -D the same reply stops the microphone, which is checked too.  The action
-button still cuts a reply with -D (barge-in, a new run), and -D under ESPHome is ignored."""
+button still cuts a reply with -D (barge-in, a new run), and -D under ESPHome is ignored.  A client that cuts a reply
+with hassmic-continue keeps the run: the microphone streams on past played, no new run, and the next reply ends it."""
 import asyncio, contextlib, os, shutil, signal, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from webclient import wait_port
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.client import AsyncTcpClient
+from wyoming.event import Event
 from wyoming.pipeline import RunPipeline
 from wyoming.satellite import RunSatellite
 from wyoming.snd import Played
@@ -135,6 +137,45 @@ async def button():
             print(f"ok   -D: the button cut the reply and a new run began after {asyncio.get_running_loop().time() - t0:.2f}s")
 
 
+async def keep_listening(duplex):
+    """-D: hassmic-continue before a reply's audio-stop (the client cut it for speech it heard) keeps the run: played,
+    then the microphone streams on without a new run, and the next reply's audio-stop ends the run.  Without -D it is
+    ignored and played ends the run as before"""
+    with echo("-P", "wyoming", *(["-D"] if duplex else [])) as (proc, play, log):
+        async with AsyncTcpClient("127.0.0.1", PORT) as client:
+            await client.write_event(RunSatellite().event())
+            await asyncio.sleep(0.2)
+            proc.send_signal(signal.SIGUSR1)
+            while not RunPipeline.is_type((await asyncio.wait_for(client.read_event(), 5)).type): pass
+            await client.write_event(AudioStart(rate=RATE, width=2, channels=1).event())
+            for _ in range(5):                                   # half a second of reply, as it plays
+                await client.write_event(AudioChunk(rate=RATE, width=2, channels=1, audio=b" " * (RATE // 10)).event())
+                await asyncio.sleep(0.1)
+            await client.write_event(Event(type="hassmic-continue"))
+            await client.write_event(AudioStop().event())
+            _, played, runs = await mic_chunks_during(client, 2)
+            assert played, "no played after the cut reply's audio-stop"
+            after, _, runs2 = await mic_chunks_during(client, 0.5)
+            if not duplex:
+                assert after == 0, f"without -D hassmic-continue kept the microphone ({after} chunks)"
+                assert logged(log, "hassmic-continue: no reply of a -D run"), "without -D: hassmic-continue not refused"
+                print("ok   no -D: hassmic-continue ignored, played ends the run")
+                return
+            assert runs + runs2 == 0, "-D: hassmic-continue began another run"
+            assert after > 0, "-D: the microphone stopped at played despite hassmic-continue"
+            assert logged(log, "the run goes on listening (-D)"), "-D: no log line for the kept run"
+            await client.write_event(AudioStart(rate=RATE, width=2, channels=1).event())     # the answer to the question
+            for _ in range(3):
+                await client.write_event(AudioChunk(rate=RATE, width=2, channels=1, audio=b" " * (RATE // 10)).event())
+                await asyncio.sleep(0.1)
+            await client.write_event(AudioStop().event())
+            _, played2, _ = await mic_chunks_during(client, 2)
+            assert played2, "-D: no played after the second reply"
+            end, *_ = await mic_chunks_during(client, 0.5)
+            assert end == 0, f"-D: the second reply's audio-stop did not end the run ({end} chunks)"
+            print(f"ok   -D: hassmic-continue kept the run ({after} chunks in 0.5 s after played), the next reply ended it")
+
+
 def esphome_ignored():
     """-D is Wyoming only: under ESPHome hassmic says so at start"""
     with echo("-P", "esphome", "-D") as (proc, play, log):
@@ -146,6 +187,8 @@ async def main():
     await one(duplex=False)
     await one(duplex=True)
     await button()
+    await keep_listening(duplex=True)
+    await keep_listening(duplex=False)
     esphome_ignored()
 
 
