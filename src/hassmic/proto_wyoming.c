@@ -79,21 +79,29 @@ static void send_info(void)
 static void handle(const struct wy_event *ev)
 {
     const char *t = ev->type;
-    if (!strcmp(t, "audio-chunk")) { core_tts_data(ev->payload, ev->payload_len); return; }
 
     pthread_mutex_lock(&core_lock);
-    if (!strcmp(t, "ping")) send_event("pong", NULL, NULL, 0);
+    if (!strcmp(t, "audio-chunk")) { core_duplex_progress(); core_tts_data(ev->payload, ev->payload_len); }
+    else if (!strcmp(t, "ping")) send_event("pong", NULL, NULL, 0);
     else if (!strcmp(t, "describe")) send_info();
-    else if (!strcmp(t, "run-satellite")) { fprintf(stderr, "satellite: running\n"); core_link(1, 1); }
+    else if (!strcmp(t, "run-satellite")) {
+        if (core_duplex) {
+            int seconds = wy_failsafe_seconds(ev->json);
+            if (seconds > 0) core_duplex_failsafe(seconds);
+            else fprintf(stderr, "invalid hassmic_failsafe_seconds, ignored\n");
+        }
+        fprintf(stderr, "satellite: running\n"); core_link(1, 1);
+    }
     else if (!strcmp(t, "pause-satellite")) core_link_pause();
     else if (!strcmp(t, "detection")) core_set_state(LISTENING);
     else if (!strcmp(t, "voice-stopped") || !strcmp(t, "transcript")) {
+        core_duplex_progress();
         if (!strcmp(t, "transcript")) {
             char text[256] = "";
             wy_json_str(strchr(ev->json, '\n') ? strchr(ev->json, '\n') : ev->json, "text", text, sizeof text);
             fprintf(stderr, "transcript: %s\n", text);
             screen_words(SCREEN_WORDS_HEARD, text);              /* Wyoming tells no reply text, only the words */
-            core_mic_off();
+            if (!core_duplex) core_mic_off();
         }
         if (core_state() == LISTENING) core_set_state(THINKING);
     } else if (!strcmp(t, "audio-start")) {
@@ -102,10 +110,12 @@ static void handle(const struct wy_event *ev)
         if (width != 2) fprintf(stderr, "play: unsupported sample width %ld, expect noise\n", width);
         core_tts_begin(rate, ch, 0);
     } else if (!strcmp(t, "hassmic-continue")) {
-        /* -D, ours: the client cuts the reply for speech it heard and keeps listening to it.  Sent before the reply's
-         * audio-stop; that audio-stop's played ends no run (core_continue).  Ignored without -D or with no reply */
+        /* Compatibility hint for older duplex clients. Natural reply completion now always keeps capture;
+         * hassmic-flush discards output and hassmic-end explicitly ends the run. Ignored without -D. */
         if (!core_continue()) fprintf(stderr, "hassmic-continue: no reply of a -D run to go on from, ignored\n");
-    } else if (!strcmp(t, "audio-stop")) core_tts_end();
+    } else if (!strcmp(t, "hassmic-flush")) core_duplex_flush();
+    else if (!strcmp(t, "hassmic-end")) core_duplex_end();
+    else if (!strcmp(t, "audio-stop")) { core_duplex_progress(); core_tts_end(); }
     else if (!strcmp(t, "error")) {
         char code[64] = "";
         fprintf(stderr, "server error: %s\n", ev->json);
@@ -120,7 +130,7 @@ static void serve(int fd)
     struct wy_reader rd; static struct wy_event ev;
     if (wy_reader_init(&rd, fd) < 0) return;
     pthread_mutex_lock(&core_lock);
-    client = fd; core_link(1, 0); if (core_muted()) mute_changed(1);
+    client = fd; core_duplex_connected(); core_duplex_failsafe(30); core_link(1, 0); if (core_muted()) mute_changed(1);
     pthread_mutex_unlock(&core_lock);
     fprintf(stderr, "client connected\n");
 

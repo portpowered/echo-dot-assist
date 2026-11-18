@@ -65,6 +65,7 @@ TESTS = [
     ("wyoming", [PY, "tests/fake_ha.py"]),
     ("wyoming-mute", [PY, "tests/wyoming_mute.py"]),
     ("talk-duplex", [PY, "tests/fake_talk_duplex.py"]),
+    ("talk-duplex-device", [PY, "tests/fake_talk_duplex_device.py"]),
     ("talk-duplex-mouth", [PY, "tests/fake_talk_duplex_mouth.py"]),
     ("screen", [PY, "tests/fake_screen.py"]),
     ("screen-9", [PY, "tests/fake_screen.py", "--legacy"]),

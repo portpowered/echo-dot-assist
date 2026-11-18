@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
-"""-D (duplex) over Wyoming against build/hassmic-host: the microphone keeps streaming while a reply plays, and the run
-ends at audio-stop as before.  Without -D the same reply stops the microphone, which is checked too.  The action
-button still cuts a reply with -D (barge-in, a new run), and -D under ESPHome is ignored.  A client that cuts a reply
-with hassmic-continue keeps the run: the microphone streams on past played, no new run, and the next reply ends it."""
+"""Duplex keeps capture through playback and natural stop; explicit client end finishes the run.
+Non-duplex, the action button and ESPHome retain their legacy behavior. hassmic-continue stays accepted."""
 import asyncio, contextlib, os, shutil, signal, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -78,6 +76,13 @@ async def one(duplex):
             before, *_ = await mic_chunks_during(client, 0.5)
             assert before > 0, "no microphone after the wake word"
 
+            if not duplex:
+                await client.write_event(Event(type="hassmic-flush"))
+                await client.write_event(Event(type="hassmic-end"))
+                await client.write_event(Event(type="transcript", data={"text": "legacy question"}))
+                await mic_chunks_during(client, 0.2)
+                stopped, *_ = await mic_chunks_during(client, 0.25)
+                assert stopped == 0, "non-D transcript did not stop capture"
             await client.write_event(AudioStart(rate=RATE, width=2, channels=1).event())
             for _ in range(10):                                  # one second of reply, sent as it plays
                 await client.write_event(AudioChunk(rate=RATE, width=2, channels=1, audio=b"\0\0" * (RATE // 10)).event())
@@ -103,6 +108,11 @@ async def one(duplex):
             _, played, _ = await mic_chunks_during(client, 2)
             assert played, "no played after audio-stop"
             after, *_ = await mic_chunks_during(client, 0.5)
+            if duplex:
+                assert after > 0, "-D: natural stop ended capture"
+                await client.write_event(Event(type="hassmic-end"))
+                await mic_chunks_during(client, 0.2)
+                after, *_ = await mic_chunks_during(client, 0.5)
             assert after == 0, "the microphone still streams after the run ended"
             print(f"ok   {'-D' if duplex else 'no -D'}: microphone chunks before {before}, while speaking {during}, after the run 0")
 
@@ -171,9 +181,13 @@ async def keep_listening(duplex):
             await client.write_event(AudioStop().event())
             _, played2, _ = await mic_chunks_during(client, 2)
             assert played2, "-D: no played after the second reply"
+            continuing, *_ = await mic_chunks_during(client, 0.5)
+            assert continuing > 0, "-D: second reply ended capture without client end"
+            await client.write_event(Event(type="hassmic-end"))
+            await mic_chunks_during(client, 0.2)
             end, *_ = await mic_chunks_during(client, 0.5)
-            assert end == 0, f"-D: the second reply's audio-stop did not end the run ({end} chunks)"
-            print(f"ok   -D: hassmic-continue kept the run ({after} chunks in 0.5 s after played), the next reply ended it")
+            assert end == 0, f"-D: explicit end did not stop capture ({end} chunks)"
+            print(f"ok   -D: hassmic-continue kept the run ({after} chunks in 0.5 s after played), explicit end ended it")
 
 
 def esphome_ignored():
