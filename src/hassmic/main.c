@@ -2143,6 +2143,10 @@ static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t q_cond = PTHREAD_COND_INITIALIZER;
 static struct item *q_head, *q_tail;
 static size_t q_bytes;
+/* Per-reply counters: the worker witnesses discarded PCM independently of the client. */
+static atomic_ullong duplex_discarded, duplex_written;
+static unsigned long long duplex_flush_ms, duplex_flush_written;
+
 
 static void q_push(int kind, int media, unsigned rate, unsigned ch, const void *data, size_t len)
 {
@@ -2172,7 +2176,7 @@ static void duplex_abort(void)
     q_tail = NULL; q_bytes = 0;
     while (*at) {
         struct item *it = *at;
-        if (it->kind != Q_ABORT) { *at = it->next; free(it); }
+        if (it->kind != Q_ABORT) { *at = it->next; if (it->kind == Q_DATA) atomic_fetch_add(&duplex_discarded, it->len); free(it); }
         else { q_tail = it; at = &it->next; }
     }
     pthread_mutex_unlock(&q_lock);
@@ -2183,6 +2187,9 @@ void core_duplex_flush(void)
 {
     if (!core_duplex) return;
     core_duplex_progress();
+    if (!duplex_reply) return;
+    duplex_flush_ms = mono_ms();
+    duplex_flush_written = atomic_load(&duplex_written);
     core_tts_flush();
 }
 
@@ -2198,10 +2205,16 @@ void core_duplex_end(void)
 static int reply_write(struct item *it, unsigned slot)
 {
     for (size_t at = 0; at < it->len; ) {
-        if (core_duplex && (!duplex_playing() || atomic_load(&flush_playback))) return -1;
+        if (core_duplex && (!duplex_playing() || atomic_load(&flush_playback))) {
+            atomic_fetch_add(&duplex_discarded, it->len - at);
+            return -1;
+        }
         size_t n = it->len - at;
         if (core_duplex && n > slot) n = slot;
         if (play_write(it->data + at, n) < 0) return -1;
+        /* Count only completed slots. The receipt snapshot conservatively
+         * excludes the one slot whose sink write/pacing may still be running. */
+        if (core_duplex) atomic_fetch_add(&duplex_written, n);
         at += n;
     }
     return 0;
@@ -2222,6 +2235,7 @@ static void *playback_thread(void *arg)
 
         if (core_duplex && it->kind != Q_ABORT && it->generation != atomic_load(&duplex_generation)) {
             if (open) { play_close(0); open = 0; }
+            if (it->kind == Q_DATA) atomic_fetch_add(&duplex_discarded, it->len);
             free(it);
             continue;
         }
@@ -2258,6 +2272,12 @@ static void *playback_thread(void *arg)
                 pthread_mutex_unlock(&core_lock);
                 break;                              /* abort owns the acknowledgement */
             }
+            if (core_duplex && it->kind == Q_ABORT && duplex_flush_ms) {
+                fprintf(stderr, "duplex flush: receipt_ms=%llu closed_ms=%llu before=%llu written=%llu discarded=%llu\n",
+                        duplex_flush_ms, (unsigned long long)mono_ms(), duplex_flush_written,
+                        atomic_load(&duplex_written), atomic_load(&duplex_discarded));
+                duplex_flush_ms = 0;
+            }
             if (core_duplex && it->kind == Q_STOP) duplex_reply = 0;
             atomic_store(&flush_playback, 0);       /* under the lock: a wake word between would cut the next reply */
             if (proto->played && (!core_duplex || it->connection == atomic_load(&duplex_connection))) proto->played(); /* also without a client: modules reset their state here */
@@ -2277,7 +2297,7 @@ static void *playback_thread(void *arg)
 
 void core_tts_begin(unsigned rate, unsigned channels, int media)
 {
-    if (core_duplex) { atomic_fetch_add(&duplex_generation, 1); duplex_reply = 1; atomic_store(&duplex_accept, 1); core_duplex_progress(); }
+    if (core_duplex) { atomic_store(&duplex_written, 0); atomic_store(&duplex_discarded, 0); atomic_fetch_add(&duplex_generation, 1); duplex_reply = 1; atomic_store(&duplex_accept, 1); core_duplex_progress(); }
     /* wake_wait: a chime and then the message.  -D: the stream stays open, and with it the front end's listening flag
      * (listening(1) of pipeline_start): its cancellers do not adapt during the reply.  As measured on radar (PLAN.md);
      * listening(0) for the reply, as -w remote has it, not tried */

@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -128,6 +129,11 @@ async def controls(mode="all"):
             await p.ack(1)
             cut = play.stat().st_size
             assert 0 <= cut - before <= 960, f"post-flush growth {cut - before}, ceiling 960"
+            record = re.search(r"duplex flush: receipt_ms=(\d+) closed_ms=(\d+) before=(\d+) written=(\d+) discarded=(\d+)", log.read_text())
+            assert record, "missing native discard observation"
+            receipt, closed, committed, written, discarded = map(int, record.groups())
+            assert closed - receipt <= 40 and 0 <= written - committed <= 960
+            assert written == cut and written + discarded == len(PCM) * 210
             elapsed = (time.monotonic() - t0) * 1000
             await p.capture()
             assert play.stat().st_size == cut, "old PCM resumed after played"
