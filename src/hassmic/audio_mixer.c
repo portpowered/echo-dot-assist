@@ -9,6 +9,8 @@
 #include <unistd.h>
 #include "mixer_api.h"
 
+int (*audio_playing)(void);
+
 static MixerHandle cap, play;
 static int cap_held;
 

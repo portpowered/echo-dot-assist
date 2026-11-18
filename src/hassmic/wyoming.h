@@ -26,4 +26,5 @@ int  wy_write(int fd, const char *type, const char *data, const void *payload, s
 /* Flat key lookup good enough for the fixed messages Home Assistant sends. */
 int  wy_json_int(const char *json, const char *key, long *out);
 int  wy_json_str(const char *json, const char *key, char *out, size_t outsz);
+int wy_failsafe_seconds(const char *json);                  /* 30 omitted, -1 invalid */
 #endif

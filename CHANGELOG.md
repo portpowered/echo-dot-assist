@@ -2,6 +2,13 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-11-18
+
+- **Duplex clients control reply cancellation and run end.** Under Wyoming `-D`, `hassmic-flush` discards the active
+  reply and acknowledges it once with `played`; capture continues. Transcript and natural reply completion also keep
+  capture open. Send `hassmic-end` to end it. A client-configurable safety watchdog defaults to 30 seconds. Clients
+  using `-D` must send the explicit end command; non-duplex and ESPHome behavior stay the same.
+
 ## 2026-11-13
 
 - **Duplex for a realtime agent (`-D`, Wyoming).** With `-D` in `ARGS` the microphone keeps streaming while a reply

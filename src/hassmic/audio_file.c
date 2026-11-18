@@ -12,6 +12,8 @@
 #include <time.h>
 #include <unistd.h>
 
+int (*audio_playing)(void);
+
 static FILE *cap, *play;
 static short block[800];
 static unsigned play_rate, play_ch;
@@ -72,6 +74,7 @@ int play_open(unsigned rate, unsigned channels)
 {
     const char *p = getenv("HASSMIC_PLAY");
     play = fopen(p ? p : "/tmp/hassmic_play.raw", "ab");
+    if (play && audio_playing) setvbuf(play, NULL, _IONBF, 0);
     play_rate = rate; play_ch = channels;
     return play ? 0 : -1;
 }

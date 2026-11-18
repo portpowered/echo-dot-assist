@@ -758,11 +758,30 @@ static int wake_cut;
  * proto_wyoming.c): the reply's Q_STOP says played and the run goes on listening, the microphone streaming as it was.
  * No new run, no lead-in, no sound: the question that cut the reply is still being said into this one */
 static int keep_listening;
+/* -D watchdog: client progress alone refreshes it; core_lock held. */
+static int duplex_failsafe_s = PIPELINE_TIMEOUT, duplex_reply;
+static long long duplex_progress_ms;
+static atomic_int duplex_accept;
+static atomic_uint duplex_generation, duplex_connection;
+static unsigned playing_generation;                /* playback thread only */
+static int duplex_playing(void)
+{
+    return !core_duplex || (playing_generation == atomic_load(&duplex_generation) && !atomic_load(&flush_playback));
+}
+void core_duplex_progress(void)
+{
+    if (core_duplex && atomic_load(&streaming)) duplex_progress_ms = mono_ms();
+}
+void core_duplex_connected(void) { atomic_fetch_add(&duplex_connection, 1); }
+void core_duplex_failsafe(int seconds) { duplex_failsafe_s = seconds; }
+static void duplex_abort(void);
 static int wake_fails;                              /* lock held: wake word runs Home Assistant failed during this reply */
 static int follow_up;                               /* lock held: the pipeline now starting is a follow-up to a question */
 static void pipeline_start(uint64_t from)    /* from: where the wake word that starts it ended, 0: not a wake word */
 {
     run_over = 0; wake_wait = 0; keep_listening = 0;
+    duplex_progress_ms = mono_ms();
+    if (core_duplex) atomic_fetch_add(&duplex_generation, 1);
     quiet_abort = 0;
     mic_fresh = 1;
     replay_from = from;
@@ -1141,6 +1160,7 @@ void core_restart_after(void) { barge_in = 1; barge_from = 0; }
 void core_pipeline_finish(void)
 {
     wake_fails = 0; keep_listening = 0;
+    if (core_duplex) duplex_abort();
     if (atomic_exchange(&streaming, 0) && connected) {
         /* a run that only listened for the wake word is aborted, not ended: a stale error from it must not reach the next */
         if (wake_wait && proto->cancel) proto->cancel();
@@ -1283,7 +1303,8 @@ static void trigger(int touch, uint64_t from)
         fprintf(stderr, "barge-in\n");
         wake_cut_ms = mono_ms();
         barge_in = 1; barge_from = from;
-        atomic_store(&flush_playback, 1);   /* playback thread drops TTS up to audio-stop, then we restart */
+        if (core_duplex) { duplex_abort(); core_pipeline_finish(); }
+        else atomic_store(&flush_playback, 1);   /* legacy: drop TTS up to audio-stop, then restart */
     }
     pthread_mutex_unlock(&core_lock);
 }
@@ -2114,8 +2135,8 @@ static void on_pair(void)
 
 /* ---------------------------------------------------------------- playback queue */
 
-struct item { struct item *next; int kind, media; unsigned rate, ch; size_t len; unsigned char data[]; };   /* media: Q_START */
-enum { Q_START, Q_DATA, Q_STOP };
+struct item { struct item *next; int kind, media; unsigned rate, ch, generation, connection; size_t len; unsigned char data[]; };   /* media: Q_START */
+enum { Q_START, Q_DATA, Q_STOP, Q_ABORT };
 static void tts_kind(int media);
 
 static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -2127,6 +2148,8 @@ static void q_push(int kind, int media, unsigned rate, unsigned ch, const void *
 {
     struct item *it = malloc(sizeof *it + len);
     if (!it) return;
+    it->generation = atomic_load(&duplex_generation);
+    it->connection = atomic_load(&duplex_connection);
     it->next = NULL; it->kind = kind; it->media = media; it->rate = rate; it->ch = ch; it->len = len;
     if (len) memcpy(it->data, data, len);
     pthread_mutex_lock(&q_lock);
@@ -2136,9 +2159,58 @@ static void q_push(int kind, int media, unsigned rate, unsigned ch, const void *
     pthread_mutex_unlock(&q_lock);
 }
 
+/* core_lock held. q_lock is never held while acquiring core_lock. Invalidate even a dequeued item.
+ * Only playback_thread touches the player; Q_ABORT wakes it even before the first PCM arrived. */
+static void duplex_abort(void)
+{
+    if (!duplex_reply) return;
+    duplex_reply = 0;
+    atomic_store(&duplex_accept, 0);
+    atomic_fetch_add(&duplex_generation, 1);
+    pthread_mutex_lock(&q_lock);
+    struct item **at = &q_head;
+    q_tail = NULL; q_bytes = 0;
+    while (*at) {
+        struct item *it = *at;
+        if (it->kind != Q_ABORT) { *at = it->next; free(it); }
+        else { q_tail = it; at = &it->next; }
+    }
+    pthread_mutex_unlock(&q_lock);
+    q_push(Q_ABORT, 0, 0, 0, NULL, 0);
+}
+
+void core_duplex_flush(void)
+{
+    if (!core_duplex) return;
+    core_duplex_progress();
+    core_tts_flush();
+}
+
+void core_duplex_end(void)
+{
+    if (!core_duplex || (!atomic_load(&streaming) && !duplex_reply)) return;
+    duplex_abort();
+    barge_in = 0;
+    core_pipeline_finish();
+}
+
+/* One wire chunk may hold seconds of audio. Yield to cancellation between 20 ms sink writes. */
+static int reply_write(struct item *it, unsigned slot)
+{
+    for (size_t at = 0; at < it->len; ) {
+        if (core_duplex && (!duplex_playing() || atomic_load(&flush_playback))) return -1;
+        size_t n = it->len - at;
+        if (core_duplex && n > slot) n = slot;
+        if (play_write(it->data + at, n) < 0) return -1;
+        at += n;
+    }
+    return 0;
+}
+
 static void *playback_thread(void *arg)
 {
-    int open = 0;
+    int open = 0; unsigned slot = 960;
+    audio_playing = core_duplex ? duplex_playing : NULL;
     (void)arg;
     for (;;) {
         pthread_mutex_lock(&q_lock);
@@ -2148,13 +2220,20 @@ static void *playback_thread(void *arg)
         q_bytes -= it->len;
         pthread_mutex_unlock(&q_lock);
 
-        if (atomic_load(&flush_playback) && it->kind != Q_STOP) {
+        if (core_duplex && it->kind != Q_ABORT && it->generation != atomic_load(&duplex_generation)) {
+            if (open) { play_close(0); open = 0; }
+            free(it);
+            continue;
+        }
+        if (atomic_load(&flush_playback) && it->kind != Q_STOP && it->kind != Q_ABORT) {
             if (open) { play_close(0); open = 0; }
             free(it);
             continue;
         }
         switch (it->kind) {
         case Q_START:
+            playing_generation = it->generation;
+            slot = it->rate / 50 * it->ch * 2; if (!slot) slot = 2;
             if (open) play_close(1);        /* e.g. announcement chime followed by the message */
             tts_kind(it->media);            /* the TTS stream's volume for what comes now */
             open = play_open(it->rate, it->ch) == 0;
@@ -2168,20 +2247,26 @@ static void *playback_thread(void *arg)
                 screen_level(ns >= 4 && e > 0 ? (int)lround(100 * log10(e / (ns / 4) / (32768.0 * 32768.0))) : -1000);
                 atomic_store(&reply_level_ms, mono_ms());
             }
-            if (open && play_write(it->data, it->len) < 0) { play_close(0); open = 0; }
+            if (open && reply_write(it, slot) < 0) { play_close(0); open = 0; }
             break;
+        case Q_ABORT:
         case Q_STOP:
-            if (open) { play_close(1); open = 0; }
+            if (open) { play_close(it->kind == Q_STOP && duplex_playing()); open = 0; }
             atomic_store(&tts_on, 0); playback_hint();
             pthread_mutex_lock(&core_lock);
+            if (core_duplex && it->kind == Q_STOP && it->generation != atomic_load(&duplex_generation)) {
+                pthread_mutex_unlock(&core_lock);
+                break;                              /* abort owns the acknowledgement */
+            }
+            if (core_duplex && it->kind == Q_STOP) duplex_reply = 0;
             atomic_store(&flush_playback, 0);       /* under the lock: a wake word between would cut the next reply */
-            if (proto->played) proto->played();      /* also without a client: modules reset their state here */
+            if (proto->played && (!core_duplex || it->connection == atomic_load(&duplex_connection))) proto->played(); /* also without a client: modules reset their state here */
             if (wake_cut) wake_cut = 0;              /* cut for Home Assistant's wake word: its run is the request (core_remote_wake) */
-            else if (keep_listening && connected && atomic_load(&streaming)) {
+            else if (((core_duplex && !barge_in && it->generation == atomic_load(&duplex_generation)) || keep_listening) && connected && atomic_load(&streaming)) {
                 keep_listening = 0;
                 fprintf(stderr, "reply cut by the client: the run goes on listening (-D)\n");
                 core_set_state(LISTENING);
-            } else core_pipeline_finish();
+            } else if (!core_duplex || it->kind != Q_ABORT) core_pipeline_finish();
             pthread_mutex_unlock(&core_lock);
             break;
         }
@@ -2192,6 +2277,7 @@ static void *playback_thread(void *arg)
 
 void core_tts_begin(unsigned rate, unsigned channels, int media)
 {
+    if (core_duplex) { atomic_fetch_add(&duplex_generation, 1); duplex_reply = 1; atomic_store(&duplex_accept, 1); core_duplex_progress(); }
     /* wake_wait: a chime and then the message.  -D: the stream stays open, and with it the front end's listening flag
      * (listening(1) of pipeline_start): its cancellers do not adapt during the reply.  As measured on radar (PLAN.md);
      * listening(0) for the reply, as -w remote has it, not tried */
@@ -2202,8 +2288,12 @@ void core_tts_begin(unsigned rate, unsigned channels, int media)
     wake_listen();
 }
 
-void core_tts_data(const void *pcm, size_t len) { if (!atomic_load(&flush_playback)) q_push(Q_DATA, 0, 0, 0, pcm, len); }
-void core_tts_end(void) { q_push(Q_STOP, 0, 0, 0, NULL, 0); }
+void core_tts_data(const void *pcm, size_t len) { if (!atomic_load(&flush_playback) && (!core_duplex || atomic_load(&duplex_accept))) q_push(Q_DATA, 0, 0, 0, pcm, len); }
+void core_tts_end(void)
+{
+    if (core_duplex && !atomic_exchange(&duplex_accept, 0)) return;
+    q_push(Q_STOP, 0, 0, 0, NULL, 0);
+}
 /* lock held.  cancel() let go of a fetch after its audio began: no Q_STOP of its own follows (one would end the run
  * that cancelled it, or close the next reply), so none is left to swallow for the wake word's cut either */
 void core_tts_abandoned(void) { wake_cut = 0; }
@@ -2216,7 +2306,7 @@ int core_continue(void)
     return 1;
 }
 int  core_tts_flushing(void) { return atomic_load(&flush_playback); }
-void core_tts_flush(void) { atomic_store(&flush_playback, 1); }
+void core_tts_flush(void) { if (core_duplex) duplex_abort(); else atomic_store(&flush_playback, 1); }
 
 size_t core_tts_queued(void)
 {
@@ -3497,7 +3587,11 @@ static void *capture_thread(void *arg)
         if (arb_due && (mono_ms() >= arb_due || arb_settled())) { arb_due = 0; if (arb_decide()) answer(arb_from, 1); else { afe_done(); wake_tell("answered_elsewhere"); } }    /* after this block went out live */
 
         pthread_mutex_lock(&core_lock);
-        if ((state == LISTENING || state == THINKING) && time(NULL) - state_since > PIPELINE_TIMEOUT) {
+        if (core_duplex && atomic_load(&streaming) && mono_ms() - duplex_progress_ms >= (long long)duplex_failsafe_s * 1000) {
+            fprintf(stderr, "duplex failsafe expired\n");
+            core_duplex_end();
+        }
+        if (!core_duplex && (state == LISTENING || state == THINKING) && time(NULL) - state_since > PIPELINE_TIMEOUT) {
             fprintf(stderr, "pipeline timeout\n");
             core_pipeline_finish();
         }

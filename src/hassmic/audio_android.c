@@ -35,6 +35,8 @@
 #include <time.h>
 #include <unistd.h>
 
+int (*audio_playing)(void);
+
 static SLObjectItf engine_obj, mix_obj;
 static SLEngineItf engine;
 static pthread_once_t engine_once = PTHREAD_ONCE_INIT;
@@ -492,9 +494,12 @@ static int s_write(struct pstream *s, const void *data, size_t len)
     while (len) {
         size_t n = len < s->slot ? len : s->slot;
         pthread_mutex_lock(&s->lock);
+        long long until = now_ms() + 2000;
         while (s->busy == PLAY_NBUF) {
-            struct timespec ts; deadline(&ts, 2000);
+            if (s == &voice && audio_playing && !audio_playing()) { pthread_mutex_unlock(&s->lock); return -1; }
+            struct timespec ts; deadline(&ts, s == &voice && audio_playing ? 20 : 2000);
             if (pthread_cond_timedwait(&s->cond, &s->lock, &ts) == ETIMEDOUT) {
+                if (s == &voice && audio_playing && now_ms() < until) continue;
                 pthread_mutex_unlock(&s->lock);
                 fprintf(stderr, "audio: player does not consume\n");
                 return -1;
@@ -543,9 +548,16 @@ static void s_close(struct pstream *s, int drain)
         pthread_mutex_lock(&s->lock);
         struct timespec ts; deadline(&ts, 5000);
         int rc = 0;
-        while (s->busy && rc != ETIMEDOUT) rc = pthread_cond_timedwait(&s->cond, &s->lock, &ts);
+        while (s->busy && rc != ETIMEDOUT) {
+            if (s == &voice && audio_playing) {
+                if (!audio_playing()) break;
+                struct timespec tick; deadline(&tick, 20);
+                pthread_cond_timedwait(&s->cond, &s->lock, &tick);
+                if (now_ms() - s->last_cb > 5000) break;
+            } else rc = pthread_cond_timedwait(&s->cond, &s->lock, &ts);
+        }
         pthread_mutex_unlock(&s->lock);
-        for (int i = 0; i < 50 && !s_drained(s); i++) usleep(10000);
+        for (int i = 0; i < 50 && !s_drained(s) && (s != &voice || !audio_playing || audio_playing()); i++) usleep(10000);
     }
     (*s->play)->SetPlayState(s->play, SL_PLAYSTATE_STOPPED);
     (*s->q)->Clear(s->q);

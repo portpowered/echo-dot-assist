@@ -1039,6 +1039,24 @@ ARGS=""                     # extra options, below
 | `-B` | no Bluetooth |
 | `-p <port>` | another port (the firewall only admits inbound TCP 16384–32767) |
 
+### Wyoming duplex client controls
+
+With `-D`, the client owns capture lifetime. `transcript` and `voice-stopped` may update the display but keep the
+microphone streaming. `audio-stop` drains the current reply and reports `played`, then capture keeps listening.
+Send `hassmic-end` to end the run and discard any active reply without draining. The next wake word starts a new run.
+
+Send `hassmic-flush` to discard queued and in-player reply audio without ending capture. An active reply produces
+one `played` after discard. Flush without a reply, repeated flush/end and an old `audio-stop` after a flush are
+no-ops. Start a replacement with `audio-start`. `hassmic-continue` remains a compatibility hint; it no longer decides
+whether a duplex run ends. The new commands are ignored without `-D`; ESPHome behavior is unchanged.
+
+The device retains a safety watchdog for stalled clients, including during playback. `run-satellite` may carry
+`{"hassmic_failsafe_seconds":30}` in its data object (integer 1..2147483647). Omission selects 30 seconds. Invalid
+values are logged and leave the current valid value unchanged. Reconnecting resets the default. Valid transcript,
+voice-stopped, reply audio and flush commands refresh the monotonic watchdog; microphone traffic, ping and describe
+do not. Expiry aborts playback and capture and permits the next wake. This is a device failsafe, not a conversational
+idle timer. Mute, disconnect and local safety controls retain authority.
+
 ## adb over Wi-Fi
 
 adb on an unlocked Echo is a root shell that asks for no key, so over Wi-Fi it is closed. USB always works. To open it

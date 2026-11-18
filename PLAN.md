@@ -11,6 +11,12 @@ Firmware analysed: `donut_puffin` NS65741 / Fire OS 6574.1. Findings: [docs/FIND
 Legend: `[x]` done, `[~]` partly done (note says what is missing), `[ ]` open. **(device)** = needs the physical Echo.
 "Done" in phases 0–2 means done on the PC. Device unlocked + rooted 2026-09-21 (kamakiri-donut, boot-root); satellite installed and in daily use since, reachable over Wi-Fi (adb, push updates).
 
+## Duplex device controls (2026-11-18)
+
+- [~] Wyoming `-D`: client-commanded `hassmic-flush` and `hassmic-end`, with a connection-local safety watchdog.
+  Host protocol witnesses live in `tests/fake_talk_duplex_device.py`; parser cases in `tests/unit/wyoming_test.c`.
+  The guide records the coordinated client rollout. Physical Android output and AEC remain operator-owned checks.
+
 ## Phase 0 — Workspace (no device)
 
 - [x] Unpack OTA `payload.bin` (`tools/payload_dump.py`)

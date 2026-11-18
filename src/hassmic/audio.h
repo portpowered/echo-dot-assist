@@ -12,6 +12,7 @@ int  cap_open(void);
 int  cap_read(const void **data);
 void cap_close(void);
 
+extern int (*audio_playing)(void);                          /* optional playback-thread cancellation probe */
 int  play_open(unsigned rate, unsigned channels);
 int  play_write(const void *data, size_t len);      /* blocks at playback speed */
 void audio_tts_gain(float gain);                    /* as audio_music_gain (below), for this stream: replies */

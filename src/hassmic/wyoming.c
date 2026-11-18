@@ -1,4 +1,6 @@
 #include "wyoming.h"
+#include "json.h"
+#include <limits.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -108,4 +110,26 @@ int wy_json_str(const char *json, const char *key, char *out, size_t outsz)
         out[n++] = *p;
     }
     out[n] = 0; return 1;
+}
+
+/* run-satellite's optional watchdog field. Token spelling matters: 1.0, true and overflow must not disable safety. */
+int wy_failsafe_seconds(const char *text)
+{
+    const char *data = strchr(text, '\n');
+    if (data) text = data + 1;
+    struct json j = {0};
+    if (json_parse(&j, text, strlen(text)) < 0) { json_free(&j); return -1; }
+    int tok = json_get(&j, 0, "hassmic_failsafe_seconds"), value = 30;
+    if (tok >= 0) {
+        value = 0;
+        if (json_type(&j, tok) != J_NUM) value = -1;
+        else for (int i = j.t[tok].start; i < j.t[tok].end; i++) {
+            int digit = text[i] - '0';
+            if (digit < 0 || digit > 9 || value > (INT_MAX - digit) / 10) { value = -1; break; }
+            value = value * 10 + digit;
+        }
+        if (!value) value = -1;
+    }
+    json_free(&j);
+    return value;
 }
