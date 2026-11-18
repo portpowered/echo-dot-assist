@@ -241,6 +241,7 @@ static atomic_int flush_playback, alarm_on;   /* barge-in: drop queued TTS; a fi
 static atomic_int busy;                             /* state != IDLE, for threads without the lock (the ring pauses) */
 static atomic_int tts_on, music_on;                 /* something plays: the wake word model lowers its threshold then.
                                                     * music_on: MUSIC_* bits */
+static atomic_llong reply_level_ms;                 /* -D: when the reply last gave the mouth its level (mono_ms) */
 /* 64 bits: a long is 32 on the Echo, and 32 000 bytes/s pass 2^31 after 18.6 h.  It went negative, cap_clock() made
  * ~9.2e18 of it, and the first wake word after that streamed the ring for ever under core_lock (issue #31) */
 static atomic_llong cap_bytes;                      /* capture thread adds: micAsr bytes read since the start */
@@ -1590,6 +1591,7 @@ static int kiosk_score(uint64_t end, int simulated)
  *   micAsr (4 triggers, 2026-09-30), as loud as a quiet talker.  The gain took it for speech and came down for the
  *   command behind it (-32 instead of -26 dBFS in Home Assistant's recording), so it holds still while a sound plays,
  *   and over audio earsup held back across one.  sound: this audio has one in it (sound_in, earsup). */
+#define REPLY_QUIET_MS 150                          /* -D: no reply audio this long, the mouth closes (send_out) */
 static void send_out(const int16_t *pcm, size_t n, int sound)
 {
     static int16_t out[1024 + MICDENOISE_FRAME];
@@ -1611,7 +1613,11 @@ static void send_out(const int16_t *pcm, size_t n, int sound)
             micgain_run(&mic_gain, src, out, m); proto->audio(out, m * 2);
             double e = 0; for (size_t i = 0; i < m; i++) e += (double)out[i] * out[i];   /* the band's listening bar */
             int db10 = e > 0 ? (int)lround(100 * log10(e / m / (32768.0 * 32768.0))) : -1000;
-            ring_level(db10); screen_level(db10);
+            ring_level(db10);
+            /* -D: the reply stays open across the call, its silences too, and the face talks all along.  The mouth is the
+             * reply's: the talker never moves it, and it closes once no reply audio came for REPLY_QUIET_MS */
+            if (!(core_duplex && atomic_load(&tts_on))) screen_level(db10);
+            else if (mono_ms() - atomic_load(&reply_level_ms) > REPLY_QUIET_MS) screen_level(-1000);
         }
         pcm += k; n -= k;
     }
@@ -2160,6 +2166,7 @@ static void *playback_thread(void *arg)
                 const int16_t *pcm = (const int16_t *)it->data; size_t ns = it->len / 2; double e = 0;
                 for (size_t i = 0; i < ns; i += 4) e += (double)pcm[i] * pcm[i];
                 screen_level(ns >= 4 && e > 0 ? (int)lround(100 * log10(e / (ns / 4) / (32768.0 * 32768.0))) : -1000);
+                atomic_store(&reply_level_ms, mono_ms());
             }
             if (open && play_write(it->data, it->len) < 0) { play_close(0); open = 0; }
             break;
