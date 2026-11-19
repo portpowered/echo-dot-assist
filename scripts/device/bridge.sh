@@ -75,6 +75,7 @@ GOOD_RUN=60
 START_WAIT=20
 STOP_WAIT=20
 LOCK_WAIT=60
+NET_SETTLE=10
 OUT_MAX=1048576
 
 # as main.sh stamps the log's lines: UTC once the clock was set from Home Assistant, else seconds since boot
@@ -148,6 +149,20 @@ run)
     trap bye TERM INT HUP
     boot=$(boot_id)
     parked="" delay=$BACKOFF_MIN t0=$(up) missing=0
+    # A start waits for the network.  A bridge started before the Echo has one cannot log in, says that its login has
+    # to be made again and stays so until it is started again: seen at boot, the start 21 s after it and a second
+    # before DHCP was done.  The network is there once a resolver is known, as lockdown.sh finds them; lockdown.sh
+    # lets a new resolver through on its next look (5 s), hence the wait after one turned up.  This supervisor's
+    # first start waits that long with a resolver known too: at boot it may be a second old.
+    online() { getprop 2>/dev/null | grep -qE '^\[(dhcp\.[^.]+|net)\.dns[0-9]+\]: \[[^]]+\]'; }
+    snooze() { sleep $1 & nap=$!; wait $nap; nap=; }
+    netwait() {
+        fresh=$1
+        online || { fresh=1; say "no network yet (no resolver known): the start waits for it"; }
+        until online; do snooze $POLL; wanted || return 1; done
+        [ -z "$fresh" ] || snooze $NET_SETTLE
+        wanted
+    }
     park() { [ -z "$parked" ] || return 0; say "$1"; parked=1; echo "$boot" > $PARK; }
     unpark() { parked=; rm -f $PARK; }
     # One start, the installer's: the layout checked, private/run/ made afresh with its gate and FIFO, launch.sh in a
@@ -193,6 +208,7 @@ mkdir run && mkdir run/control && mkfifo run/stdin"; then
             delay=$((delay * 2)); [ $delay -le $BACKOFF_MAX ] || delay=$BACKOFF_MAX
         fi
         wanted || return 0
+        netwait "" || return 0
         if [ -d $RUN ] && [ ! -e $RUN/stop ] && [ ! -d $RUN/control ] && ! running; then launch; fi
     }
 
@@ -206,7 +222,9 @@ mkdir run && mkdir run/control && mkfifo run/stdin"; then
     elif [ -n "$parked" ]; then
         say "stopped by its owner in this boot: not started (echo-install.sh start or bridge.sh start does)"
     else
-        launch          # whatever private/run/ holds is from before this boot, or from a bridge that is gone
+        # whatever private/run/ holds is from before this boot, or from a bridge that is gone; a bridge that runs
+        # after the wait is the installer's, started meanwhile, and is watched
+        netwait first && { running || launch; }
     fi
     while wanted; do
         sleep $POLL

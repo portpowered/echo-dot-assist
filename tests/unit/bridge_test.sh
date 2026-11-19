@@ -21,7 +21,7 @@ grep -q "^OWNER=$ME " $Q/dev/bridge.sh && grep -q "^ROOT=$ME\$" $Q/dev/bridge.sh
 # sleep: the script's own looks (1 s, 5 s) are short here; the waits between starts are written down and cut short
 cat > $Q/bin/sleep << EOF
 #!/bin/sh
-case "\$1" in 1) exec $RSLEEP 0.05;; 5) exec $RSLEEP 0.1;; esac
+case "\$1" in 1) exec $RSLEEP 0.05;; 5) exec $RSLEEP 0.1;; 10) echo 10 >> $Q/settles; exec $RSLEEP 0.05;; esac
 [ -z "\$FAKE_SLEEP" ] || { echo "\$1" >> "\$FAKE_SLEEP"; exec $RSLEEP 0.02; }
 exec $RSLEEP "\$@"
 EOF
@@ -30,6 +30,12 @@ cat > $Q/bin/ps << EOF
 case "\$*" in *ARGS*) exec $(command -v ps) -e -o args;; esac
 echo NAME; echo sh
 pgrep -f "^/bin/sh $E/bin/echo-bridge --config" > /dev/null && echo echo-bridge
+exit 0
+EOF
+# getprop: the Echo's resolvers while $Q/net is there (lockdown.sh's look), no other property
+cat > $Q/bin/getprop << EOF
+#!/bin/sh
+[ \$# = 0 ] && [ -e $Q/net ] && echo "[net.dns1]: [192.0.2.1]"
 exit 0
 EOF
 cat > $Q/dev/runas << EOF
@@ -84,7 +90,8 @@ B() { PATH=$Q/bin:$PATH sh $Q/dev/bridge.sh "$@"; }
 S() { FAKE_SLEEP=$Q/sleeps PATH=$Q/bin:$PATH exec sh ${1:-$Q/dev/bridge.sh} run < /dev/null >> $Q/log 2>&1; }      # with &: $! is the supervisor itself
 fresh() {
     pkill -f "$Q/dev/bridge" 2>/dev/null; pkill -f "$P/launch.sh" 2>/dev/null; pkill -f "$E/bin/echo-bridge" 2>/dev/null
-    rm -rf $E $E.lock $H/bridge.pid $H/bridge.parked $Q/log $Q/runas.log $Q/session $Q/fd3 $Q/stdin $Q/args $Q/starts $Q/eof $Q/sleeps
+    rm -rf $E $E.lock $H/bridge.pid $H/bridge.parked $Q/log $Q/runas.log $Q/session $Q/fd3 $Q/stdin $Q/args $Q/starts $Q/eof $Q/sleeps $Q/settles
+    touch $Q/net
 }
 # the installer's layout: bin/ closed to others, private/ and home/ the bridge user's own
 opted() {
@@ -132,6 +139,8 @@ ok_ $? "what the bridge says: a private file, not the boot log"
 until_ 'grep -q "bridge: started as nobody" $Q/log' && [ "$(cat $H/bridge.pid)" = $sup ]; ok_ $? "the start in the log, the supervisor's pid in hassmic's folder"
 sleep 1.5; [ "$(lines $Q/starts)" = 1 ] && [ ! -e $Q/eof ] && kill -0 $(last); ok_ $? "its input stays open: still the first one after 1.5 s"
 
+[ "$(cat $Q/settles)" = 10 ]; ok_ $? "its first start 10 s after a resolver was seen (lockdown.sh lets it through meanwhile)"
+
 # --- it falls over: started again
 kill -KILL $(last); until_ '[ "$(lines $Q/starts)" = 2 ]' && grep -q 'bridge: exited after [0-9]* s, restart in 3 s' $Q/log && [ "$(cat $Q/sleeps)" = 3 ]
 ok_ $? "the bridge killed: said in the log, started again after the wait"
@@ -142,6 +151,22 @@ grep -qx "nobody 3990,inet /bin/sh -c touch $P/run/finished" $Q/runas.log; ok_ $
 touch $P/run/stop; pkill -KILL -f "$P/launch.sh"; kill -KILL $(last); until_ '[ -f $P/run/finished ]'; r=$?; rm -rf $P/run; sleep 0.5
 [ $r = 0 ] && [ "$(lines $Q/starts)" = 3 ] && grep -q 'stopped by its owner' $Q/log; ok_ $? "the same during a stop by its owner: \`finished\` left, nothing started"
 inst_start; until_ '[ "$(lines $Q/starts)" = 4 ]' && until_ 'grep -q "started by its owner: watched from here" $Q/log'; ok_ $? "(started again by the installer for what follows)"
+
+# --- no network yet (the boot, before DHCP is done): the start waits for a resolver
+opted eof; rm $Q/net; S & sup=$!
+until_ 'grep -q "no network yet" $Q/log' && sleep 0.5 && [ ! -e $Q/starts ] && [ ! -e $Q/runas.log ] && [ ! -e $P/run ] && [ "$(grep -c 'no network yet' $Q/log)" = 1 ]
+ok_ $? "no resolver known: said once, nothing started, nothing made"
+touch $Q/net; until_ '[ -s $Q/starts ]' && [ "$(cat $Q/settles)" = 10 ] && [ "$(lines $Q/starts)" = 1 ]; ok_ $? "a resolver turns up: started 10 s later, once"
+rm $Q/net; kill -KILL $(last); until_ 'grep -q "restart in 3 s" $Q/log' && until_ '[ "$(grep -c "no network yet" $Q/log)" = 2 ]' && sleep 0.5 && [ "$(lines $Q/starts)" = 1 ]
+ok_ $? "it falls over with the network gone: not started again without one"
+touch $Q/net; until_ '[ "$(lines $Q/starts)" = 2 ]' && [ "$(lines $Q/settles)" = 2 ]; ok_ $? "the network back: started again, 10 s after its resolver"
+opted eof; rm $Q/net; S & sup=$!
+until_ 'grep -q "no network yet" $Q/log'; kill $sup; until_ '! kill -0 $sup' && grep -q 'supervisor ended' $Q/log && [ ! -e $H/bridge.pid ] && [ ! -e $Q/starts ]
+ok_ $? "the supervisor ended during that wait: gone at once, nothing started"
+opted eof; rm $Q/net; S & sup=$!
+until_ 'grep -q "no network yet" $Q/log'; inst_start; until_ '[ -s $Q/starts ]'; touch $Q/net; until_ '[ -s $Q/settles ]'; sleep 0.5
+[ "$(lines $Q/starts)" = 1 ] && kill -0 $(last) && ! grep -q 'bridge: started as nobody' $Q/log; ok_ $? "the installer's start during that wait: its bridge left running, none started beside it"
+kill -KILL $(last); until_ '[ "$(lines $Q/starts)" = 2 ]'; ok_ $? "and watched: started again when it falls over"
 
 # --- stopped by its owner: the installer's stop holds, the installer's start is watched like one of ours
 n=$(lines $Q/starts); b=$(last); inst_stop 0.5; r=$?
