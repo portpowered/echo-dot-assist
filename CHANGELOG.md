@@ -2,6 +2,17 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-11-19
+
+- **A realtime voice client on the Echo itself: portos-echo's bridge started at boot, beside hassmic.** Where
+  portos-echo's installer (`scripts/echo-install.sh` there) put the bridge on the Echo (`/data/local/echo-bridge`: its
+  launcher `private/launch.sh` and its configuration `private/bridge.toml`), the satellite service starts it at boot
+  the way the installer's `start` does: as Android's user nobody, never root, with the network group hassmic uses. It
+  starts the bridge again when it falls over: after 3 seconds, doubling to 5 minutes while it keeps failing. A bridge
+  stopped by its owner (the installer's `stop`, or `sh bridge.sh stop` next to `main.sh`) stays stopped until the
+  installer's `start`, `sh bridge.sh start` or a reboot. Without both files nothing changes; no firewall rule and no
+  setting changes with them either.
+
 ## 2026-11-18
 
 - **Duplex clients control reply cancellation and run end.** Under Wyoming `-D`, `hassmic-flush` discards the active
