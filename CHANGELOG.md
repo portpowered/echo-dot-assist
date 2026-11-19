@@ -9,8 +9,8 @@ What changed for people using the Echo, newest first. Details and measurements a
   launcher `private/launch.sh` and its configuration `private/bridge.toml`), the satellite service starts it at boot
   the way the installer's `start` does: as Android's user nobody, never root, with the network group hassmic uses. It
   starts the bridge again when it falls over: after 3 seconds, doubling to 5 minutes while it keeps failing. A start
-  waits for the network (a resolver known, then 10 seconds): a bridge started before it cannot log in and stays so. A bridge
-  stopped by its owner (the installer's `stop`, or `sh bridge.sh stop` next to `main.sh`) stays stopped until the
+  waits for the network (a resolver known, then 10 seconds): a bridge started before it cannot log in and stays so.
+  A bridge stopped by its owner (the installer's `stop`, or `sh bridge.sh stop` next to `main.sh`) stays stopped until the
   installer's `start`, `sh bridge.sh start` or a reboot. Without both files nothing changes; no firewall rule and no
   setting changes with them either.
 
