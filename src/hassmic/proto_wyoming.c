@@ -115,6 +115,12 @@ static void handle(const struct wy_event *ev)
         if (!core_continue()) fprintf(stderr, "hassmic-continue: no reply of a -D run to go on from, ignored\n");
     } else if (!strcmp(t, "hassmic-flush")) core_duplex_flush();
     else if (!strcmp(t, "hassmic-end")) core_duplex_end();
+    else if (!strcmp(t, "hassmic-thinking")) {          /* -D: the eyes think while the client's agent works */
+        const char *v = strstr(ev->json, "\"thinking\"");      /* true unless it says false */
+        if (v) v = strchr(v, ':');
+        while (v && (*++v == ' ')) ;
+        core_duplex_thinking(!(v && !strncmp(v, "false", 5)));
+    }
     else if (!strcmp(t, "audio-stop")) { core_duplex_progress(); core_tts_end(); }
     else if (!strcmp(t, "error")) {
         char code[64] = "";

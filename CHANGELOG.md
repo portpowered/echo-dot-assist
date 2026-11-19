@@ -4,6 +4,10 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-11-18
 
+- **A duplex client can show that its agent is thinking.** Under Wyoming `-D`, `hassmic-thinking` with
+  `{"thinking": true}` makes the eyes and the ring think, over listening and over an open reply, until
+  `{"thinking": false}` or the end of the run. It changes nothing else: the microphone, the reply and the run go on
+  as they were. Ignored without `-D`.
 - **Duplex clients control reply cancellation and run end.** Under Wyoming `-D`, `hassmic-flush` discards the active
   reply and acknowledges it once with `played`; capture continues. Transcript and natural reply completion also keep
   capture open. Send `hassmic-end` to end it. A client-configurable safety watchdog defaults to 30 seconds. Clients

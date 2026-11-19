@@ -410,6 +410,27 @@ static void led_for(enum state from, enum state to)
 
 enum state core_state(void) { return state; }
 
+/* lock held: -D, the client says its agent is working on the answer (hassmic-thinking, proto_wyoming.c).  Display only:
+ * the eyes and the ring think, over listening and over an open reply, until the client takes it back or the run
+ * ends.  State, microphone and playback are untouched */
+static int duplex_thinking;
+
+void core_duplex_thinking(int on)
+{
+    on = !!on;
+    if (!core_duplex || state == IDLE) { if (on) fprintf(stderr, "hassmic-thinking: no -D run, ignored\n"); return; }
+    if (on == duplex_thinking) return;
+    duplex_thinking = on;
+    fprintf(stderr, "thinking: %s (the client, -D)\n", on ? "on" : "off");
+    if (on) {
+        if (state == LISTENING) led("-u", "active-start");      /* the face shows the first of them (face_mode) */
+        if (state != THINKING) led("-s", "active-thinking");
+    } else {
+        if (state != THINKING) led("-u", "active-thinking");
+        if (state == LISTENING) led("-s", "active-start");
+    }
+}
+
 void core_set_state(enum state s)
 {
     if (s == state) return;
@@ -418,6 +439,13 @@ void core_set_state(enum state s)
      * "ready-timer-short" once on FOCUS_ENTERED_BACKGROUND, then the pipeline's own patterns cover "ready-timer" */
     if (state == IDLE && atomic_load(&alarm_on)) led("-s", "ready-timer-short");
     led_for(state, s);
+    if (duplex_thinking) {                              /* the client's thinking stays over the states of its run */
+        if (s == IDLE) { duplex_thinking = 0; if (state != THINKING) led("-u", "active-thinking"); }
+        else {
+            if (s == LISTENING) led("-u", "active-start");
+            if (state == THINKING) led("-s", "active-thinking");
+        }
+    }
     /* the words on the screen (screen.c): a request from idle takes the last one's away, idle lets them fade */
     if (state == IDLE) screen_words(SCREEN_WORDS_RUN, NULL);
     else if (s == IDLE) screen_words(SCREEN_WORDS_IDLE, NULL);
