@@ -183,6 +183,7 @@ void   core_duplex_progress(void);                         /* core_lock held: va
 void   core_duplex_failsafe(int seconds);                   /* validated positive seconds, per connection */
 void   core_duplex_flush(void);                            /* discard reply, keep capture */
 void   core_duplex_end(void);                              /* abort reply and finish run */
+void   core_duplex_thinking(int on);                       /* lock held: the client's agent works, display only */
 int    core_continue(void);                                 /* lock held, -D: legacy continue hint (1: taken) */
 int    core_tts_flushing(void);                             /* barge-in: drop audio until core_tts_end() */
 void   core_tts_flush(void);
