@@ -4,6 +4,13 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-11-18
 
+- **A realtime voice client on the Echo itself: portos-echo's bridge started beside hassmic.** Where the owner put
+  the bridge (`/data/local/echo-bridge/echo-bridge`) and its configuration
+  (`/data/local/echo-bridge/private/bridge.toml`) on the Echo, the satellite service starts it at boot, with the
+  network group hassmic uses, and starts it again when it exits: after 3 seconds, doubling to 5 minutes while it keeps
+  failing. `sh bridge.sh stop` (next to `main.sh`) stops it cleanly, `sh bridge.sh start` starts it again. Without both
+  files nothing changes; no firewall rule and no setting changes with them either.
+
 - **Duplex clients control reply cancellation and run end.** Under Wyoming `-D`, `hassmic-flush` discards the active
   reply and acknowledges it once with `played`; capture continues. Transcript and natural reply completion also keep
   capture open. Send `hassmic-end` to end it. A client-configurable safety watchdog defaults to 30 seconds. Clients

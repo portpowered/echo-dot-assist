@@ -241,7 +241,7 @@ UNIT := src/hassmic/hash.c src/hassmic/ws.c src/hassmic/net.c src/hassmic/noise.
 # One target per test, so make -j unit runs them side by side (tests/run.py does: most of them wait or compile).
 UNIT_TESTS := hash ws noise ble_crypto micgain micend afemeta wordtail wakealign wifimotion spkgain tz statefile ledq micdenoise earsup dha_jwt a2dp_codecs \
 	sbc web_crypto web_tar web_soundpack web_matrix web_loudness ring_pack mww blueprint_dropin buttons buttons_privacy buttons_grab afe_parcel lux ring_band sounds wifictl ringbar volcurve band_map setup_wipe firmware kiosk backlight \
-	screen ui touch json pb uninstall_boot sysinstall_aligners resample fork_release wyoming
+	screen ui touch json pb uninstall_boot sysinstall_aligners resample fork_release wyoming bridge
 unit: $(addprefix unit-,$(UNIT_TESTS))
 unit-hash:
 	@mkdir -p build
@@ -332,6 +332,10 @@ unit-uninstall_boot:
 # the wake word aligners onto /system: the installers stage them, sysinstall.sh where they fit
 unit-sysinstall_aligners:
 	bash tests/unit/sysinstall_aligners_test.sh
+# portos-echo's bridge beside hassmic (scripts/device/bridge.sh): nothing without its binary and configuration, the
+# start, the clean stop, the wait between restarts
+unit-bridge:
+	bash tests/unit/bridge_test.sh
 unit-ring_pack:
 	if command -v node >/dev/null; then node tests/unit/ring_pack_test.js; else echo "ring packs: node missing, skipped"; fi
 unit-mww:

@@ -923,6 +923,10 @@ satellite)
     kiosk_perm_sync 2>&1 | stamped >> $LOG &
     rm -f /data/local/hassmic/adaptive-colour       # readback from a previous boot is no proof the service is up now
     backlight 2>&1 | stamped >> $LOG &
+    # portos-echo's bridge beside hassmic (bridge.sh: a client of the Wyoming port on the Echo itself), only where the
+    # owner put its binary and its configuration on the Echo: without them the script ends at once and says nothing.
+    # In this service's process group, so it ends with the service, and its bridge with it (bridge.sh says how).
+    [ -f $D/bridge.sh ] && sh $D/bridge.sh run < /dev/null >> $LOG 2>&1 &
     # mDNS through the stock avahi-daemon: hassmic prints the service file for its protocol, name and MAC address.
     # The MAC in it is how Home Assistant tells devices apart.  On radar wlan0 appears only later in the boot, hassmic
     # printed its placeholder MAC, and Home Assistant offered the adopted Echo as a new device.  So wait for Wi-Fi
