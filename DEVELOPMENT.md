@@ -18,8 +18,9 @@ No `hassmic.conf` = stock behaviour. `sysinstall.sh` writes the system partition
 dm-verity is off): for `install-system.sh`, and for every update (pushed or online) once it passed its self test
 (`main.c`: wake word engine loaded, ports bound, a second of mic audio; `ota_healthy()` leaves `state/ota/healthy`, root's
 `ota_watch` promotes), which renews the factory copy and the bootstrap (`boot.sh`, `otatool`, `hassmic.rc`) over Wi-Fi.
-`scripts/device/bridge.sh` (started by `main.sh satellite`) keeps portos-echo's bridge running beside hassmic, only where
-its binary and configuration are in `/data/local/echo-bridge` (`tests/unit/bridge_test.sh`, `make unit-bridge`).
+`scripts/device/bridge.sh` (started by `main.sh satellite`) keeps portos-echo's bridge running beside hassmic, as user
+nobody and through the launcher portos-echo's installer wrote, only where that launcher and a configuration are in
+`/data/local/echo-bridge/private` (`tests/unit/bridge_test.sh`, `make unit-bridge`).
 
 Everything that differs between Echo models lives in `devices/<codename>/`: build settings, hardware constants linked
 into the daemon (`board.c`), service names and install method for the scripts (`device.conf`), init rc and SELinux

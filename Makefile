@@ -332,7 +332,7 @@ unit-uninstall_boot:
 # the wake word aligners onto /system: the installers stage them, sysinstall.sh where they fit
 unit-sysinstall_aligners:
 	bash tests/unit/sysinstall_aligners_test.sh
-# portos-echo's bridge beside hassmic (scripts/device/bridge.sh): nothing without its binary and configuration, the
+# portos-echo's bridge beside hassmic (scripts/device/bridge.sh): nothing without its launcher and configuration, the
 # start, the clean stop, the wait between restarts
 unit-bridge:
 	bash tests/unit/bridge_test.sh
