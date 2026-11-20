@@ -135,9 +135,11 @@ static void runner(struct rgb *led, long long t, int lap, struct rgb c, float ta
 static atomic_int level_db = -1000;      /* the talker, dBFS x 10, from the pipeline's audio (ring_level) */
 static float loud;                       /* smoothed 0..1; the band thread's */
 
-enum pid { P_RESET, P_VOLUME, P_ASSIST, P_LISTEN, P_THINK, P_TALK, P_END, P_CALL_OUT, P_CALL_IN, P_CALL, P_CALL_END, P_ERROR,
-           P_MUTE, P_UNMUTE, P_DND, P_IDENTIFY, P_LOGIN, P_PAIRING, P_TIMER, P_TIMER_SHORT, P_SETUP, P_COUNT };
-/* priority order (first wins: the volume over a reply, as the ring shows it) and how long each shows: -1 until unset */
+enum pid { P_RESET, P_VOLUME, P_ASSIST, P_MUTE, P_UNMUTE, P_LISTEN, P_THINK, P_TALK, P_END, P_CALL_OUT, P_CALL_IN, P_CALL,
+           P_CALL_END, P_ERROR, P_DND, P_IDENTIFY, P_LOGIN, P_PAIRING, P_TIMER, P_TIMER_SHORT, P_SETUP, P_COUNT };
+/* priority order (first wins: the volume over a reply, as the ring shows it) and how long each shows: -1 until unset.
+ * The mic off is over a request, a reply and a call: a reply goes on with the mic off (and a -D run for as long as its
+ * client keeps it), and the red has to say so then too, as the Dots' red ring does under every pattern */
 static const struct { const char *name; int ms; } pats[P_COUNT] = {
     [P_RESET] = { "factory-reset", -1 },
     [P_LISTEN] = { "active-start", -1 }, [P_THINK] = { "active-thinking", -1 }, [P_TALK] = { "active-talking", -1 },
