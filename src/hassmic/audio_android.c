@@ -13,13 +13,18 @@
  *  - one capture at a time: Android 7 lets a newer AudioRecord take the input from a HOTWORD one, so amazon.speech.sim
  *    (which records 1999 and 2999 itself) must be disabled first;
  *  - the preset: VOICE_RECOGNITION is the closest OpenSL ES has to stock's HOTWORD source, both pick the ASR pipeline
- *    (getAspPipelineType in the HAL); HOTWORD itself is not reachable from OpenSL ES. */
+ *    (getAspPipelineType in the HAL); HOTWORD itself is not reachable from OpenSL ES.
+ *
+ * The preset is state/capture's (capsrc.c, which has the measurements): VOICE_COMMUNICATION by default, the HAL's Voice
+ * pipeline with its echo canceller, for which we send the front end the speaker volume index its playback is multiplied
+ * by (asp_send below); VOICE_RECOGNITION is the capture as described above, and nothing is sent. */
 #include "resample.h"
 #include "audio.h"
 #include "core.h"
 #include "afe_parcel.h"
 #include "board.h"
 #include "btout.h"
+#include "capsrc.h"
 #include "statefile.h"
 #include <stdatomic.h>
 #include <sys/system_properties.h>
@@ -95,9 +100,46 @@ static void cap_cb(SLAndroidSimpleBufferQueueItf q, void *ctx)
     pthread_mutex_unlock(&cap_lock);
 }
 
+/* --- the capture's source (state/capture, read once) and, with VOICE_COMMUNICATION, the front end's speaker volume
+ * index (capsrc.c says why): sent before the first open, after every reopen and every ASP_SEND_EVERY_S on a thread of
+ * its own (the audio HAL restarted: the index is gone with its process).  A line in the log for the first send, every
+ * failure and a changed exit status, not one a minute.  One send at a time (asp_lock). */
+static struct capsrc_conf cap_conf;
+static pthread_once_t cap_conf_once = PTHREAD_ONCE_INIT;
+static void cap_conf_init(void) { capsrc_load(&cap_conf); }
+static pthread_mutex_t asp_lock = PTHREAD_MUTEX_INITIALIZER;
+static int asp_last = CAPSRC_RUN_NEVER;     /* under asp_lock: the last send's exit status */
+
+static void asp_send(void)
+{
+    struct afe_call c; char line[120];
+    if (cap_conf.source != CAPSRC_VOICE_COMMUNICATION || capsrc_asp_argv(&c, cap_conf.asp_index)) return;
+    pthread_mutex_lock(&asp_lock);
+    int st = capsrc_run(c.argv, ASP_SEND_TIMEOUT_MS);
+    if (capsrc_asp_say(&asp_last, st)) { capsrc_asp_line(line, sizeof line, cap_conf.asp_index, st); fprintf(stderr, "%s\n", line); }
+    pthread_mutex_unlock(&asp_lock);
+}
+
+static void *asp_thread(void *arg)
+{
+    (void)arg;
+    for (;;) { sleep(ASP_SEND_EVERY_S); asp_send(); }
+    return NULL;
+}
+
 int cap_open(void)
 {
+    static int asp_started;                 /* the capture thread only, as cap_read's reopen */
     if (!engine_ok()) return -1;
+    pthread_once(&cap_conf_once, cap_conf_init);
+    const int reopen = asp_started;
+    if (!asp_started && cap_conf.source == CAPSRC_VOICE_COMMUNICATION) {
+        pthread_t t;
+        asp_started = 1;
+        asp_send();                         /* before the first capture: no moment of a silent speaker */
+        if (!pthread_create(&t, NULL, asp_thread, NULL)) pthread_detach(t);
+        else fprintf(stderr, "asp: no thread, the volume index is not sent again every %d s\n", ASP_SEND_EVERY_S);
+    }
     SLDataLocator_IODevice dev = { SL_DATALOCATOR_IODEVICE, SL_IODEVICE_AUDIOINPUT, SL_DEFAULTDEVICEID_AUDIOINPUT, NULL };
     SLDataSource src = { &dev, NULL };
     SLDataLocator_AndroidSimpleBufferQueue loc = { SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, CAP_NBUF };
@@ -111,7 +153,8 @@ int cap_open(void)
         return -1;
     }
     SLAndroidConfigurationItf cfg;
-    SLuint32 preset = SL_ANDROID_RECORDING_PRESET_VOICE_RECOGNITION;
+    SLuint32 preset = cap_conf.source == CAPSRC_VOICE_COMMUNICATION ? SL_ANDROID_RECORDING_PRESET_VOICE_COMMUNICATION
+                                                                    : SL_ANDROID_RECORDING_PRESET_VOICE_RECOGNITION;
     if ((*rec_obj)->GetInterface(rec_obj, SL_IID_ANDROIDCONFIGURATION, &cfg) == SL_RESULT_SUCCESS)
         (*cfg)->SetConfiguration(cfg, SL_ANDROID_KEY_RECORDING_PRESET, &preset, sizeof preset);
     /* Realize is where AudioFlinger decides about the recording rights (see the top) */
@@ -130,7 +173,8 @@ int cap_open(void)
         cap_close();
         return -1;
     }
-    fprintf(stderr, "audio: OpenSL ES capture, VOICE_RECOGNITION, %u Hz mono\n", CAP_RATE);
+    fprintf(stderr, "audio: OpenSL ES capture, %s, %u Hz mono\n", capsrc_name(cap_conf.source), CAP_RATE);
+    if (reopen) asp_send();                 /* a reopen follows a capture that went quiet: audioserver may be a new one */
     return 0;
 }
 
