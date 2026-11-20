@@ -4,6 +4,16 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-11-19
 
+- **The Echo Shows record through the call pipeline, which takes the Echo's own voice out of the microphone.** The
+  capture source is `VOICE_COMMUNICATION` now: Amazon's own echo canceller, noise suppressor and gain control. On an
+  Echo Show 8 2nd gen a reply reached the microphone stream at about -42 dBFS before and at -73 to -81 dBFS with it,
+  which a realtime client (`-D`) needs to tell the talker from itself. With that source the front end multiplies all
+  playback by a volume index only Amazon's calling app set, so the speaker was silent; hassmic sets it (80: as loud as
+  before, measured at the amplifier) before the capture opens, after every reopen and once a minute. Two lines in
+  `/data/local/hassmic/state/capture` change it: `capture_source=voice_recognition` is the capture as it was (nothing
+  is sent then), `asp_volume_index=1..100` another level; a value it cannot read counts as the default and the log
+  says so. After a fresh start the first sound begins about 26 dB low and is at full level within about 6 s. The
+  room's noise floor is about 5.5 dB higher on this source, and the wake word on it is not measured yet.
 - **The Echo's clock is set from the network where portos-echo's bridge is installed.** Nothing set it on an Echo
   without Home Assistant: the firewall lets only the satellite's group out, so Android's own network time got no
   answer (17.5 hours behind, measured). Before each bridge start and every 6 hours the supervisor has the bridge's own
