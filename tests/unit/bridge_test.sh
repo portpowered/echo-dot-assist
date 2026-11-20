@@ -8,8 +8,9 @@
 # falls over started again, and the wait between starts, doubling to its cap and short again after a good run; a stop
 # by its owner (the installer's, or bridge.sh stop) that holds, through a new supervisor in the same boot too, and the
 # installer's start after it watched like one of ours; a supervisor that ends leaving its bridge to the next; what is
-# refused (links, a bridge others can write, a folder that is not nobody's); and that main.sh and the bundles carry
-# the script.
+# refused (links, a bridge others can write, a folder that is not nobody's); the clock set before a start and every
+# 6 h by the bridge's own binary as root with the firewall's group, what it said in the log, a start that never waits
+# for it longer than a few seconds; and that main.sh and the bundles carry the script.
 cd "$(dirname "$0")/../.."; Q=$(mktemp -d); fail=0
 trap 'pkill -f "$Q/" 2>/dev/null; rm -rf "$Q"' EXIT
 ok_() { if [ "$1" = 0 ]; then echo "ok   $2"; else echo "FAIL $2"; sed 's/^/     /' $Q/log $Q/runas.log 2>/dev/null; fail=1; fi; }
@@ -38,15 +39,32 @@ cat > $Q/bin/getprop << EOF
 [ \$# = 0 ] && [ -e $Q/net ] && echo "[net.dns1]: [192.0.2.1]"
 exit 0
 EOF
+# hwclock: says how it was called (the PC's RTC is not ours to write)
+cat > $Q/bin/hwclock << EOF
+#!/bin/sh
+echo "\$*" >> $Q/hwclock
+EOF
 cat > $Q/dev/runas << EOF
 #!/bin/sh
 echo "\$*" >> $Q/runas.log
 shift 2; exec "\$@"
 EOF
 # The bridge: what it was started with and how, then by $Q/mode: reads its input to the end (as the real one stops),
-# exits at once, or ignores the end of its input
+# exits at once, or ignores the end of its input. Asked for the clock (clock sync) it is no bridge: it says what
+# $Q/clockmode has it say (set, where there is none), or hangs
 cat > $Q/bridge << EOF
 #!/bin/sh
+if [ "\$1" = clock ]; then
+    echo "\$*" >> $Q/clock
+    case "\$(cat $Q/clockmode 2>/dev/null)" in
+    none) echo "clock: offset_ms=12 hosts=4 action=none";;
+    unsynced) echo "clock: unsynced reason=unreachable hosts=0"; exit 1;;
+    old) echo "echo-bridge: invalid input" >&2; exit 2;;
+    hang) exec $RSLEEP 31;;
+    *) echo "clock: offset_ms=63000000 hosts=3 action=set";;
+    esac
+    exit 0
+fi
 read -r _ _ _ _ _ sid _ < /proc/\$\$/stat
 tr '\\0' ' ' < /proc/\$sid/cmdline | grep -q "$P/launch.sh" && [ "\$sid" != "\$(cat $Q/testsid)" ] && echo own >> $Q/session
 [ -e /proc/\$\$/fd/3 ] && echo open >> $Q/fd3
@@ -90,7 +108,7 @@ B() { PATH=$Q/bin:$PATH sh $Q/dev/bridge.sh "$@"; }
 S() { FAKE_SLEEP=$Q/sleeps PATH=$Q/bin:$PATH exec sh ${1:-$Q/dev/bridge.sh} run < /dev/null >> $Q/log 2>&1; }      # with &: $! is the supervisor itself
 fresh() {
     pkill -f "$Q/dev/bridge" 2>/dev/null; pkill -f "$P/launch.sh" 2>/dev/null; pkill -f "$E/bin/echo-bridge" 2>/dev/null
-    rm -rf $E $E.lock $H/bridge.pid $H/bridge.parked $Q/log $Q/runas.log $Q/session $Q/fd3 $Q/stdin $Q/args $Q/starts $Q/eof $Q/sleeps $Q/settles
+    rm -rf $E $E.lock $H/bridge.pid $H/bridge.parked $Q/log $Q/runas.log $Q/session $Q/fd3 $Q/stdin $Q/args $Q/starts $Q/eof $Q/sleeps $Q/settles $Q/clock $Q/clockmode $Q/hwclock
     touch $Q/net
 }
 # the installer's layout: bin/ closed to others, private/ and home/ the bridge user's own
@@ -138,6 +156,9 @@ until_ '[ ! -e $E.lock ]' && [ ! -d $P/run/control ] && [ "$(stat -c %a $P/run)"
 ok_ $? "what the bridge says: a private file, not the boot log"
 until_ 'grep -q "bridge: started as nobody" $Q/log' && [ "$(cat $H/bridge.pid)" = $sup ]; ok_ $? "the start in the log, the supervisor's pid in hassmic's folder"
 sleep 1.5; [ "$(lines $Q/starts)" = 1 ] && [ ! -e $Q/eof ] && kill -0 $(last); ok_ $? "its input stays open: still the first one after 1.5 s"
+[ "$(cat $Q/clock)" = "clock sync" ] && [ "$(head -n 1 $Q/runas.log)" = "root 3990,inet $E/bin/echo-bridge clock sync" ] && [ "$(grep -c '^root ' $Q/runas.log)" = 1 ]
+ok_ $? "before the start the clock is set: the bridge's binary as root with group 3990, without the configuration, once"
+grep -q 'bridge: clock: offset_ms=63000000 hosts=3 action=set$' $Q/log && [ "$(cat $Q/hwclock)" = "-w -u" ] && [ ! -e $H/bridge.clock ]; ok_ $? "what it said is one line in the log, the clock it set written to the RTC"
 
 [ "$(cat $Q/settles)" = 10 ]; ok_ $? "its first start 10 s after a resolver was seen (lockdown.sh lets it through meanwhile)"
 
@@ -216,6 +237,21 @@ until_ '[ -s $Q/starts ]'; S & sup=$!
 until_ 'grep -q "did not start: left alone, none started" $Q/log'; r=$?; sleep 0.5
 [ $r = 0 ] && [ "$(lines $Q/starts)" = 1 ] && [ ! -e $Q/runas.log ]; ok_ $? "an echo-bridge the launcher did not start: left alone, none started beside it"
 
+# --- the clock
+opted eof; echo none > $Q/clockmode; S & sup=$!
+until_ '[ -s $Q/starts ]' && grep -q 'bridge: clock: offset_ms=12 hosts=4 action=none$' $Q/log && [ ! -e $Q/hwclock ]; ok_ $? "a clock that is right: said, left alone, the RTC not written"
+opted eof; echo unsynced > $Q/clockmode; S & sup=$!
+until_ '[ -s $Q/starts ]' && grep -q 'bridge: clock: unsynced reason=unreachable hosts=0$' $Q/log && [ ! -e $Q/hwclock ]; ok_ $? "no agreement on the time: said, the bridge starts all the same"
+opted eof; echo old > $Q/clockmode; S & sup=$!
+until_ '[ -s $Q/starts ]' && grep -q 'bridge: clock: not set (.* has no clock sync?)$' $Q/log && [ ! -e $Q/hwclock ]; ok_ $? "a bridge that knows no clock sync: said, the bridge starts all the same"
+opted eof; echo hang > $Q/clockmode; S & sup=$!
+until_ '[ -s $Q/starts ]' && grep -q 'bridge: clock: no answer within 6 s, left as it is$' $Q/log && ! pgrep -f "^$RSLEEP 31\$" > /dev/null && [ "$(grep -c 'bridge: clock' $Q/log)" = 1 ]
+ok_ $? "a clock sync that hangs: ended after 6 s, the bridge starts"
+opted eof; sed 's/^CLOCK_EVERY=21600$/CLOCK_EVERY=0/' $Q/dev/bridge.sh > $Q/dev/bridge-clock.sh; S $Q/dev/bridge-clock.sh & sup=$!
+until_ '[ "$(lines $Q/clock)" -ge 3 ]' && [ "$(lines $Q/starts)" = 1 ] && grep -q '^CLOCK_EVERY=21600$' scripts/device/bridge.sh; ok_ $? "while it watches a bridge that runs: the clock again every 6 h (here: at every look)"
+B stop > $Q/out 2>&1; until_ 'grep -q "stopped by its owner" $Q/log'; sleep 0.3; n=$(lines $Q/clock); sleep 0.5
+[ "$(lines $Q/clock)" = "$n" ]; ok_ $? "not while its owner has the bridge stopped"
+
 # --- the wait between restarts
 # (the start that takes the configuration away ends the supervisor before or after one more wait: the first ten count)
 opted fail; echo 11 > $Q/until
@@ -223,6 +259,7 @@ FAKE_SLEEP=$Q/sleeps B run < /dev/null >> $Q/log 2>&1; r=$?
 [ "$(head -n 10 $Q/sleeps | tr '\n' ' ')" = "3 6 12 24 48 96 192 300 300 300 " ]; ok_ $? "a bridge that exits at once: 3 s, doubled each time, 5 min at most ($(tr '\n' ' ' < $Q/sleeps))"
 [ $r = 0 ] && [ "$(lines $Q/starts)" = 11 ] && grep -q 'exited after [01] s, restart in 3 s' $Q/log && grep -q 'is gone: supervisor ended' $Q/log && [ ! -e $H/bridge.pid ]
 ok_ $? "each exit in the log; the configuration taken away: the supervisor ends"
+[ "$(lines $Q/clock)" = 1 ]; ok_ $? "and the clock asked for once, not at each of these starts"
 opted fail; echo 5 > $Q/until; sed -i 's/^GOOD_RUN=60$/GOOD_RUN=0/' $Q/dev/bridge.sh
 FAKE_SLEEP=$Q/sleeps B run < /dev/null >> $Q/log 2>&1
 [ "$(head -n 4 $Q/sleeps | tr '\n' ' ')" = "3 3 3 3 " ]; ok_ $? "after a run that was long enough: 3 s again"
@@ -269,5 +306,6 @@ grep -q '\[ -f \$D/bridge.sh \] && sh \$D/bridge.sh run < /dev/null >> \$LOG 2>&
 for f in scripts/bundle.sh scripts/install-system.sh scripts/install-boot.sh; do grep -q 'scripts/device/bridge.sh' $f || { echo "$f" > $Q/log; false; break; }; done
 ok_ $? "in the update bundle and both installers"
 sh -n scripts/device/bridge.sh && sh -n scripts/system/main.sh; ok_ $? "both parse"
-! grep -nE 'runas +root|\$RUNAS +root' scripts/device/bridge.sh; ok_ $? "nothing in it starts anything as root"
+[ "$(grep -cE 'runas +root|\$RUNAS +root' scripts/device/bridge.sh)" = 1 ] && grep -q '^ *\$RUNAS root \$AS_GROUPS \$BIN clock sync < /dev/null ' scripts/device/bridge.sh
+ok_ $? "as root it starts one thing: the bridge's own binary, to set the clock"
 exit $fail
