@@ -4,6 +4,11 @@ What changed for people using the Echo, newest first. Details and measurements a
 
 ## 2026-11-19
 
+- **The Echo's clock is set from the network where portos-echo's bridge is installed.** Nothing set it on an Echo
+  without Home Assistant: the firewall lets only the satellite's group out, so Android's own network time got no
+  answer (17.5 hours behind, measured). Before each bridge start and every 6 hours the supervisor has the bridge's own
+  binary set it (`echo-bridge clock sync`, as root with group 3990: the one thing it runs as root), says what came of
+  it in one line of `boot.log`, and never holds a start for it longer than 6 seconds. No firewall rule changes.
 - **A realtime voice client on the Echo itself: portos-echo's bridge started at boot, beside hassmic.** Where
   portos-echo's installer (`scripts/echo-install.sh` there) put the bridge on the Echo (`/data/local/echo-bridge`: its
   launcher `private/launch.sh` and its configuration `private/bridge.toml`), the satellite service starts it at boot

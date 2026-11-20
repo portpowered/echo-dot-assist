@@ -47,6 +47,18 @@
 # The wait before the next start doubles from 3 s to 5 min while the bridge keeps exiting within a minute, and is 3 s
 # again after a run of a minute or more: a bridge that cannot start (no network, a broken configuration, a login that
 # ran out) does not spin, and one that fell over after hours is back at once.
+#
+# The clock.  Nothing else sets it on an Echo that is not Home Assistant's: lockdown.sh lets only NET_GID out, so
+# Android's own network time gets no answer, and the Echo runs on whatever its clock held (17.5 h behind, measured
+# 2026-11-19).  The bridge measures the time for itself, but certificates are checked against the system clock.  So
+# before a start, and every 6 h while the supervisor runs and the bridge is not parked, root asks the bridge's own
+# binary to set it: `echo-bridge clock sync` (SNTP to a few public servers, a majority of at least two in agreement,
+# the clock set when it is a second or more off), with group 3990 so the firewall lets it out, without the bridge's
+# configuration (nobody's, not for root to act on) and only where the layout is as the installer left it (bin/ root's
+# alone).  It is the one thing here that runs as root.  What it said is one line in the log; no answer within
+# CLOCK_WAIT seconds and it is ended and the start goes on: a start never waits longer for the clock.  A clock that
+# was set is written to the RTC, as main.sh does after Home Assistant's time.  A bridge that restarts within a minute
+# does not ask again.
 umask 077
 BR=/data/local/echo-bridge
 BIN=$BR/bin/echo-bridge
@@ -77,6 +89,9 @@ STOP_WAIT=20
 LOCK_WAIT=60
 NET_SETTLE=10
 OUT_MAX=1048576
+CLOCK_EVERY=21600
+CLOCK_WAIT=6
+CLOCK_OUT=$BASE/bridge.clock                # root's own folder: what clock sync said
 
 # as main.sh stamps the log's lines: UTC once the clock was set from Home Assistant, else seconds since boot
 stamp() { if [ "$(getprop hassmic.clock.synced 2>/dev/null)" = 1 ]; then date -u '+%Y-%m-%d %H:%M:%SZ'; else read -r u _ < /proc/uptime; echo "boot+$u"; fi; }
@@ -148,7 +163,7 @@ run)
     }
     trap bye TERM INT HUP
     boot=$(boot_id)
-    parked="" delay=$BACKOFF_MIN t0=$(up) missing=0
+    parked="" delay=$BACKOFF_MIN t0=$(up) missing=0 clock_at=""
     # A start waits for the network.  A bridge started before the Echo has one cannot log in, says that its login has
     # to be made again and stays so until it is started again: seen at boot, the start 21 s after it and a second
     # before DHCP was done.  The network is there once a resolver is known, as lockdown.sh finds them; lockdown.sh
@@ -163,6 +178,25 @@ run)
         [ -z "$fresh" ] || snooze $NET_SETTLE
         wanted
     }
+    # The system clock set from the network by the bridge's binary, as root with the firewall's group: one line in
+    # the log, never more than CLOCK_WAIT seconds
+    clock() {
+        clock_at=$(up)
+        unsafe > /dev/null && return 0
+        $RUNAS root $AS_GROUPS $BIN clock sync < /dev/null > $CLOCK_OUT 2> /dev/null &
+        c=$! i=0
+        while kill -0 $c 2>/dev/null; do
+            [ $i -lt $CLOCK_WAIT ] || { kill -KILL $c 2>/dev/null; wait $c 2>/dev/null; rm -f $CLOCK_OUT; say "clock: no answer within $CLOCK_WAIT s, left as it is"; return 0; }
+            sleep 1; i=$((i + 1))
+        done
+        wait $c 2>/dev/null
+        said=$(head -n 1 $CLOCK_OUT 2>/dev/null | tr -cd 'A-Za-z0-9_=:. -' | cut -c1-100); rm -f $CLOCK_OUT
+        case "$said" in
+        "clock: "*action=set) hwclock -w -u 2>/dev/null; say "$said";;
+        "clock: "*) say "$said";;
+        *) say "clock: not set ($BIN has no clock sync?)";;
+        esac
+    }
     park() { [ -z "$parked" ] || return 0; say "$1"; parked=1; echo "$boot" > $PARK; }
     unpark() { parked=; rm -f $PARK; }
     # One start, the installer's: the layout checked, private/run/ made afresh with its gate and FIFO, launch.sh in a
@@ -170,6 +204,7 @@ run)
     # launcher never ran (`finished` left for the loop, which waits and tries again).
     launch() {
         if why=$(unsafe); then park "not started: $why (echo-install.sh start puts the layout right)"; return 1; fi
+        [ -n "$clock_at" ] && [ $(( $(up) - clock_at )) -lt $GOOD_RUN ] || clock
         i=0 locked=1
         until mkdir $LOCK 2>/dev/null; do
             [ $i -lt $LOCK_WAIT ] || { locked=; say "$LOCK held for $LOCK_WAIT s (an installer that never finished?): starting without it"; break; }
@@ -228,6 +263,7 @@ mkdir run && mkdir run/control && mkfifo run/stdin"; then
     fi
     while wanted; do
         sleep $POLL
+        [ -n "$parked" ] || { [ -n "$clock_at" ] && [ $(( $(up) - clock_at )) -lt $CLOCK_EVERY ]; } || clock
         if [ ! -d $RUN ]; then
             park "stopped by its owner ($RUN is gone): not started again"
         elif [ -e $RUN/stop ]; then
