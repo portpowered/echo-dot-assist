@@ -143,6 +143,13 @@ int main(int argc, char **argv)
     check(last_timeout == 60000, "mic off: the screen sleeps after 1 min");
     ring_set("ready-timer"); ms(100);
     check(r_(px_at(480)) > 120, "mic off wins over a ringing timer");
+    ring_set("active-talking"); ms(100);
+    c = px_at(480);
+    check(r_(c) > 120 && g_(c) < 10 && b_(c) < 10, "mic off wins over a reply: red while the Echo talks");
+    ring_unset("active-talking"); ring_set("active-start"); ms(100);
+    c = px_at(480);
+    check(r_(c) > 120 && g_(c) < 10 && b_(c) < 10, "mic off wins over listening (a -D run goes on with the mic off)");
+    ring_unset("active-start");
     ring_unset("mics-off_on"); muted = 0; ms(300);
     c = px_at(480); long d = px_at(0);
     check(b_(c) > 100 && r_(c) < 50 && b_(d) > 100, "the timer: cyan and blue, the whole width");
