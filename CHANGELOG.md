@@ -2,6 +2,18 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-11-22
+
+- **Wyoming clients can read and set the speaker's volume, and mute the speaker.** Wyoming has no volume of its own,
+  so hassmic now tells a client the volume and whether the speaker is muted (`hassmic-speaker`) when it connects and
+  whenever either changes, whatever changed it: the buttons, the settings page, Music Assistant or the client. A
+  client sets the volume with `hassmic-set-volume` and mutes the speaker with `hassmic-set-output-mute`; each gets the
+  new state back as its answer. While the speaker is muted everything the Echo plays is silent, the volume stays where
+  it was (and can still be moved), and unmuting plays at it again. A restart unmutes the speaker. This is not the
+  microphone mute: the mute button and Home Assistant's mute switch work as before. For portos-echo's bridge, whose
+  remote volume and mute controls had nothing to confirm them. Home Assistant ignores the new events; ESPHome is
+  unchanged.
+
 ## 2026-11-21
 
 - **portos-echo's bridge can read the Echo's camera shutter, so camera snapshots work.** The bridge checks the

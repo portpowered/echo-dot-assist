@@ -2914,6 +2914,13 @@ static int vol_split;                        /* under lock */
  * volume here either, as with separate volumes (stream_owns_volume).  A Bluetooth speaker with absolute volume sets
  * its own loudness from the number, as before.  On by default; off gives stock's curve back. */
 static int vol_even = 1;                     /* under lock; on by default */
+/* Output mute (core_output_mute: a Wyoming client's speaker mute, hassmic-set-output-mute): everything we play is
+ * silent, in our own PCM like the gains below (mix_gain), and every volume stays as it is, so unmuting plays them
+ * again as they were and a volume set meanwhile is kept, still muted.  Not the mixer's global Mute: it persists
+ * across reboots and volume_sync clears it (stock Alexa leaves it set), and the Android Echos have none; not
+ * MainVolume at 0 either, which would lose the volume and move libasp's own.  Not saved: a restart plays again.
+ * Nothing to do with the microphones' mute (core_muted, the privacy latch) */
+static int out_muted;                        /* under lock */
 #define EVEN_FLOOR_DB (-50.0f)
 static struct { int level, linked, offset; } kinds[VOL_KINDS] = { { 40, 0, 0 }, { 40, 0, 0 }, { 40, 0, 0 }, { 40, 1, 0 } };   /* under lock */
 static int tts_media;                        /* under lock: the TTS stream plays Home Assistant's media */
@@ -2960,9 +2967,10 @@ static int kind_now(int k)
     return vol_split ? kind_volume(k) : core_volume();
 }
 
-/* lock held: what audio for volume v is multiplied by: 1 at the mixer's own, 0 at volume 0 */
+/* lock held: what audio for volume v is multiplied by: 1 at the mixer's own, 0 at volume 0 or with the output muted */
 static float mix_gain(int v)
 {
+    if (out_muted) return 0;
     if (stream_owns_volume()) return 1;
     if (v <= 0) return 0;
     if (vol_even && speaker_mode != SPEAKER_ABSOLUTE) return powf(10.0f, (want_db(v) - vol_db(mix_target())) / 20.0f);
@@ -3064,6 +3072,15 @@ int core_kind_linked(int k, int set)
         mix_apply();
     }
     return kinds[k].linked;
+}
+int core_output_mute(int set)
+{
+    if (set >= 0 && (set != 0) != out_muted) {
+        out_muted = set != 0;
+        mix_apply();
+        fprintf(stderr, "volume: output %s (the volume stays %d)\n", out_muted ? "muted" : "unmuted", core_volume());
+    }
+    return out_muted;
 }
 int core_kind_offset(int k) { return kinds[k].offset; }
 void core_set_kind_offset(int k, int offset) { kinds[k].offset = clamp_offset(offset); mix_apply(); }

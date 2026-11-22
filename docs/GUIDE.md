@@ -1057,6 +1057,20 @@ voice-stopped, reply audio and flush commands refresh the monotonic watchdog; mi
 do not. Expiry aborts playback and capture and permits the next wake. This is a device failsafe, not a conversational
 idle timer. Mute, disconnect and local safety controls retain authority.
 
+### Wyoming speaker volume and mute
+
+Wyoming has no volume, so hassmic adds its own events, with or without `-D`. On connecting, and whenever the volume
+or the speaker mute changes for any reason (buttons, settings page, Sendspin, a Bluetooth speaker's own buttons, the
+client), the client gets `hassmic-speaker` with `{"volume": 0..100, "muted": true|false}`. The client sends
+`hassmic-set-volume` with `{"volume": 0..100}` (a whole number) and `hassmic-set-output-mute` with
+`{"mute": true|false}`. Each is answered by one `hassmic-speaker`, also when nothing changed. Anything else in them
+(101, -1, 1.5, "30", 1 for true, a missing field) is logged and ignored, with no answer.
+
+`muted` is the speaker's mute, not the microphones'. While it is on, everything hassmic plays is silent: replies,
+music, sounds, timers and calls. The volume is kept and can still be set; unmuting plays at it again. It is not
+saved: a restart of hassmic unmutes. The microphone mute (the button's latch, Home Assistant's switch, `hassmic-mute`)
+is separate and unchanged. Home Assistant ignores these events.
+
 ## adb over Wi-Fi
 
 adb on an unlocked Echo is a root shell that asks for no key, so over Wi-Fi it is closed. USB always works. To open it

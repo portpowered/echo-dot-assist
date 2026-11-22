@@ -65,7 +65,8 @@ def key(code):
 try:
     c = Client()
     c.send("describe")
-    check(c.recv()[0] == "info", "unmuted: describe is answered by info first, as before")
+    check([c.recv()[0] for _ in range(2)] == ["hassmic-speaker", "info"],
+          "unmuted: the speaker's state (tests/wyoming_speaker.py), then describe is answered by info, no mute")
     check(c.mutes(1, timeout=1) == [], "a client connecting unmuted hears nothing about mute")
     c.send("run-satellite"); time.sleep(0.3)
     key(KEY_MUTE)

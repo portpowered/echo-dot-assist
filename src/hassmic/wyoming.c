@@ -112,24 +112,55 @@ int wy_json_str(const char *json, const char *key, char *out, size_t outsz)
     out[n] = 0; return 1;
 }
 
-/* run-satellite's optional watchdog field. Token spelling matters: 1.0, true and overflow must not disable safety. */
-int wy_failsafe_seconds(const char *text)
+/* The event's data parsed: the block after the header line, else the header's own "data" object (Wyoming allows it
+ * there too), else the header.  Its token; -1 if it is no JSON */
+static int data_parse(struct json *j, const char *text)
 {
     const char *data = strchr(text, '\n');
     if (data) text = data + 1;
-    struct json j = {0};
-    if (json_parse(&j, text, strlen(text)) < 0) { json_free(&j); return -1; }
-    int tok = json_get(&j, 0, "hassmic_failsafe_seconds"), value = 30;
-    if (tok >= 0) {
-        value = 0;
-        if (json_type(&j, tok) != J_NUM) value = -1;
-        else for (int i = j.t[tok].start; i < j.t[tok].end; i++) {
-            int digit = text[i] - '0';
-            if (digit < 0 || digit > 9 || value > (INT_MAX - digit) / 10) { value = -1; break; }
-            value = value * 10 + digit;
-        }
-        if (!value) value = -1;
+    if (json_parse(j, text, strlen(text)) < 0) return -1;
+    int inline_data = data ? -1 : json_get(j, 0, "data");
+    return json_type(j, inline_data) == J_OBJ ? inline_data : 0;
+}
+
+/* A number token as written, a whole one in 0..max: -1 for anything else (a sign, a fraction, an exponent, too
+ * large, not a number, tok -1) */
+static int whole(const struct json *j, int tok, int max)
+{
+    if (json_type(j, tok) != J_NUM) return -1;
+    int value = 0;
+    for (int i = j->t[tok].start; i < j->t[tok].end; i++) {
+        int digit = j->s[i] - '0';
+        if (digit < 0 || digit > 9 || value > (max - digit) / 10) return -1;
+        value = value * 10 + digit;
     }
+    return value;
+}
+
+/* run-satellite's optional watchdog field. Token spelling matters: 1.0, true and overflow must not disable safety. */
+int wy_failsafe_seconds(const char *text)
+{
+    struct json j = {0};
+    int data = data_parse(&j, text);
+    if (data < 0) { json_free(&j); return -1; }
+    int tok = json_get(&j, data, "hassmic_failsafe_seconds"), value = 30;
+    if (tok >= 0 && (value = whole(&j, tok, INT_MAX)) <= 0) value = -1;
     json_free(&j);
     return value;
+}
+
+int wy_speaker_volume(const char *text)
+{
+    struct json j = {0};
+    int data = data_parse(&j, text), value = data < 0 ? -1 : whole(&j, json_get(&j, data, "volume"), 100);
+    json_free(&j);
+    return value;
+}
+
+int wy_output_mute(const char *text)
+{
+    struct json j = {0};
+    int data = data_parse(&j, text), type = data < 0 ? 0 : json_type(&j, json_get(&j, data, "mute"));
+    json_free(&j);
+    return type == J_TRUE ? 1 : type == J_FALSE ? 0 : -1;
 }

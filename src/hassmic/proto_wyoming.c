@@ -62,6 +62,18 @@ static void played(void) { send_event("played", NULL, NULL, 0); }
  * Assistant ignores types it does not know anyway) see the stream as before */
 static void mute_changed(int muted) { send_event("hassmic-mute", muted ? "{\"muted\":true}" : "{\"muted\":false}", NULL, 0); }
 
+/* Lock held.  The speaker, which Wyoming has no event for either: our own "hassmic-speaker" {"volume": 0..100,
+ * "muted": bool} on connecting and on every change of either, whatever moved the volume (the keys, the settings page,
+ * Sendspin, a Bluetooth speaker's own buttons, the client).  muted is the output mute (core_output_mute), never the
+ * microphones' (hassmic-mute).  A client that sets either hears this as its answer, so one comes for a set that
+ * changed nothing too */
+static void volume_changed(int percent)
+{
+    char data[48];
+    snprintf(data, sizeof data, "{\"volume\":%d,\"muted\":%s}", percent, core_output_mute(-1) ? "true" : "false");
+    send_event("hassmic-speaker", data, NULL, 0);
+}
+
 static void send_info(void)
 {
     char data[1024], word[64], active[80] = "";
@@ -113,6 +125,14 @@ static void handle(const struct wy_event *ev)
         /* Compatibility hint for older duplex clients. Natural reply completion now always keeps capture;
          * hassmic-flush discards output and hassmic-end explicitly ends the run. Ignored without -D. */
         if (!core_continue()) fprintf(stderr, "hassmic-continue: no reply of a -D run to go on from, ignored\n");
+    } else if (!strcmp(t, "hassmic-set-volume")) {
+        /* a client's volume control, as Home Assistant's slider over ESPHome: core_set_volume answers (volume_changed) */
+        int v = wy_speaker_volume(ev->json);
+        if (v >= 0) core_set_volume(v); else fprintf(stderr, "hassmic-set-volume: no volume 0..100, ignored\n");
+    } else if (!strcmp(t, "hassmic-set-output-mute")) {
+        int m = wy_output_mute(ev->json);
+        if (m >= 0) { core_output_mute(m); volume_changed(core_volume()); }
+        else fprintf(stderr, "hassmic-set-output-mute: no mute true or false, ignored\n");
     } else if (!strcmp(t, "hassmic-flush")) core_duplex_flush();
     else if (!strcmp(t, "hassmic-end")) core_duplex_end();
     else if (!strcmp(t, "audio-stop")) { core_duplex_progress(); core_tts_end(); }
@@ -131,6 +151,9 @@ static void serve(int fd)
     if (wy_reader_init(&rd, fd) < 0) return;
     pthread_mutex_lock(&core_lock);
     client = fd; core_duplex_connected(); core_duplex_failsafe(30); core_link(1, 0); if (core_muted()) mute_changed(1);
+    /* the speaker as it is, on every connection: Home Assistant reads past event types it does not know (its describe
+     * waits for info, its satellite loop drops the rest) */
+    volume_changed(core_volume());
     pthread_mutex_unlock(&core_lock);
     fprintf(stderr, "client connected\n");
 
@@ -150,4 +173,4 @@ static void print_mdns(void)
            "  <service><type>_wyoming._tcp</type><port>%d</port></service>\n</service-group>\n", core_name, core_port);
 }
 
-const struct proto proto_wyoming = { "wyoming", 16700, 0, serve, start, audio, NULL, NULL, played, NULL, mute_changed, print_mdns, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+const struct proto proto_wyoming = { "wyoming", 16700, 0, serve, start, audio, NULL, NULL, played, volume_changed, mute_changed, print_mdns, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };

@@ -11,6 +11,16 @@ Firmware analysed: `donut_puffin` NS65741 / Fire OS 6574.1. Findings: [docs/FIND
 Legend: `[x]` done, `[~]` partly done (note says what is missing), `[ ]` open. **(device)** = needs the physical Echo.
 "Done" in phases 0–2 means done on the PC. Device unlocked + rooted 2026-09-21 (kamakiri-donut, boot-root); satellite installed and in daily use since, reachable over Wi-Fi (adb, push updates).
 
+## Wyoming speaker state (2026-11-22)
+
+- [~] `hassmic-speaker` {"volume", "muted"} on connect and every volume or output-mute change (the proto's
+  `volume_changed`); `hassmic-set-volume` through `core_set_volume` under `core_lock`; `hassmic-set-output-mute`
+  (`core_output_mute`) zeroes `mix_gain`, so every PCM gain (music, replies, Bluetooth, calls, sounds, timers, the
+  volume click) goes to 0 while the mixer volumes stay. Not the mixer's global Mute: it persists across reboots and
+  `volume_sync` clears it; athena has none. Not saved. Host witness `tests/wyoming_speaker.py` (a reply's peak 0
+  while muted, back after), parsers in `tests/unit/wyoming_test.c`. For portos-echo's Port OS speaker commands.
+  Not yet on a device: the gain's 30 ms glide to 0 on Android's players is untested by ear.
+
 ## Duplex device controls (2026-11-18)
 
 - [~] Wyoming `-D`: client-commanded `hassmic-flush` and `hassmic-end`, with a connection-local safety watchdog.
