@@ -146,8 +146,8 @@ fresh; B stop > $Q/out 2>&1; [ $? = 0 ] && grep -q 'not running' $Q/out; ok_ $? 
 # --- the start
 opted eof; S & sup=$!
 until_ '[ -s $Q/starts ]'; ok_ $? "with both there the bridge starts"
-[ "$(grep -c '^nobody 3990,inet /bin/sh -c umask 077; ' $Q/runas.log)" = 2 ] && [ "$(grep -c '/bin/sh -c' $Q/runas.log)" = 2 ] && grep -q "exec /bin/sh $P/launch.sh < /dev/null >> $P/bridge.log 2>&1" $Q/runas.log
-ok_ $? "through the installer's launcher, as nobody with group 3990 and inet: nothing as root"
+[ "$(grep -c '^nobody 3990,inet,input /bin/sh -c umask 077; ' $Q/runas.log)" = 2 ] && [ "$(grep -c '/bin/sh -c' $Q/runas.log)" = 2 ] && grep -q "exec /bin/sh $P/launch.sh < /dev/null >> $P/bridge.log 2>&1" $Q/runas.log
+ok_ $? "through the installer's launcher, as nobody with group 3990, inet and input (the camera shutter): nothing as root"
 [ "$(cat $Q/args)" = "--config $P/bridge.toml --trace $P/bridge.trace" ]; ok_ $? "the configuration and the trace in its private folder"
 [ "$(cat $Q/session)" = own ]; ok_ $? "in a session of its own, the launcher's"
 [ "$(cat $Q/stdin)" = "$P/run/stdin" ] && [ -p $P/run/stdin ] && [ ! -e $Q/fd3 ]; ok_ $? "its input the installer's FIFO, the writing end not handed to it"
@@ -157,7 +157,7 @@ ok_ $? "what the bridge says: a private file, not the boot log"
 until_ 'grep -q "bridge: started as nobody" $Q/log' && [ "$(cat $H/bridge.pid)" = $sup ]; ok_ $? "the start in the log, the supervisor's pid in hassmic's folder"
 sleep 1.5; [ "$(lines $Q/starts)" = 1 ] && [ ! -e $Q/eof ] && kill -0 $(last); ok_ $? "its input stays open: still the first one after 1.5 s"
 [ "$(cat $Q/clock)" = "clock sync" ] && [ "$(head -n 1 $Q/runas.log)" = "root 3990,inet $E/bin/echo-bridge clock sync" ] && [ "$(grep -c '^root ' $Q/runas.log)" = 1 ]
-ok_ $? "before the start the clock is set: the bridge's binary as root with group 3990, without the configuration, once"
+ok_ $? "before the start the clock is set: the bridge's binary as root with group 3990 and inet (not input), without the configuration, once"
 grep -q 'bridge: clock: offset_ms=63000000 hosts=3 action=set$' $Q/log && [ "$(cat $Q/hwclock)" = "-w -u" ] && [ ! -e $H/bridge.clock ]; ok_ $? "what it said is one line in the log, the clock it set written to the RTC"
 
 [ "$(cat $Q/settles)" = 10 ]; ok_ $? "its first start 10 s after a resolver was seen (lockdown.sh lets it through meanwhile)"
@@ -167,7 +167,7 @@ kill -KILL $(last); until_ '[ "$(lines $Q/starts)" = 2 ]' && grep -q 'bridge: ex
 ok_ $? "the bridge killed: said in the log, started again after the wait"
 pkill -KILL -f "$P/launch.sh"; kill -KILL $(last); until_ '[ "$(lines $Q/starts)" = 3 ]' && grep -q 'bridge: gone after' $Q/log
 ok_ $? "the launcher gone with it (nothing left to say it finished, as under the Echo's shell): started again too"
-grep -qx "nobody 3990,inet /bin/sh -c touch $P/run/finished" $Q/runas.log; ok_ $? "and \`finished\` left in the launcher's place, as nobody, for the installer's stop to find"
+grep -qx "nobody 3990,inet,input /bin/sh -c touch $P/run/finished" $Q/runas.log; ok_ $? "and \`finished\` left in the launcher's place, as nobody, for the installer's stop to find"
 # the same while its owner stops it: the installer's stop gets the \`finished\` it waits for
 touch $P/run/stop; pkill -KILL -f "$P/launch.sh"; kill -KILL $(last); until_ '[ -f $P/run/finished ]'; r=$?; rm -rf $P/run; sleep 0.5
 [ $r = 0 ] && [ "$(lines $Q/starts)" = 3 ] && grep -q 'stopped by its owner' $Q/log; ok_ $? "the same during a stop by its owner: \`finished\` left, nothing started"
@@ -306,6 +306,8 @@ grep -q '\[ -f \$D/bridge.sh \] && sh \$D/bridge.sh run < /dev/null >> \$LOG 2>&
 for f in scripts/bundle.sh scripts/install-system.sh scripts/install-boot.sh; do grep -q 'scripts/device/bridge.sh' $f || { echo "$f" > $Q/log; false; break; }; done
 ok_ $? "in the update bundle and both installers"
 sh -n scripts/device/bridge.sh && sh -n scripts/system/main.sh; ok_ $? "both parse"
-[ "$(grep -cE 'runas +root|\$RUNAS +root' scripts/device/bridge.sh)" = 1 ] && grep -q '^ *\$RUNAS root \$AS_GROUPS \$BIN clock sync < /dev/null ' scripts/device/bridge.sh
+[ "$(grep -cE 'runas +root|\$RUNAS +root' scripts/device/bridge.sh)" = 1 ] && grep -q '^ *\$RUNAS root \$CLOCK_GROUPS \$BIN clock sync < /dev/null ' scripts/device/bridge.sh
 ok_ $? "as root it starts one thing: the bridge's own binary, to set the clock"
+grep -q '^CLOCK_GROUPS=3990,inet ' scripts/device/bridge.sh && grep -q '^AS_GROUPS=3990,inet,input ' scripts/device/bridge.sh
+ok_ $? "the bridge with input (the camera shutter switch), the clock sync as root without it"
 exit $fail

@@ -16,9 +16,12 @@
 #   home/       nobody's, mode 700: what the bridge's agent keeps
 # and the installer's start, which is the one way a bridge is started here too (portos-echo docs/architecture.md,
 # "Launch contract on the Echo"):
-#   setsid runas nobody 3990,inet /system/bin/sh private/launch.sh < /dev/null >> private/bridge.log 2>&1
+#   setsid runas nobody 3990,inet,input /system/bin/sh private/launch.sh < /dev/null >> private/bridge.log 2>&1
 # - As Android's user nobody, never root, with group 3990 beside inet: lockdown.sh lets only that group out (NET_GID).
-#   No rule changes for it: runas gives the group.
+#   No rule changes for it: runas gives the group, and the firewall is keyed on 3990 alone.
+# - And input (Android's AID_INPUT, 1004): the bridge reads the camera shutter switch (SW_CAMERA_LENS_COVER on the
+#   gpio-keys evdev node under /dev/input, crw-rw---- root:input).  Without it every Port OS snapshot failed with
+#   CAMERA_ERROR; relaunched with input (groups 1004 3003 3990) they succeeded (measured on the Echo, 2026-11-21).
 # - A session of its own (setsid), so it is in nobody's process group but its own.
 # - An input that stays open: the end of its input is the bridge's request to stop.  launch.sh gives it the reading
 #   end of the FIFO private/run/stdin and holds the writing end itself, until private/run/stop is there.
@@ -77,7 +80,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 RUNAS=$HERE/runas
 SELF=${0##*/}
 AS_USER=nobody
-AS_GROUPS=3990,inet
+AS_GROUPS=3990,inet,input                   # the bridge's: input for the camera shutter switch (above)
+CLOCK_GROUPS=3990,inet                      # clock sync as root: the network only, no device it does not need
 OWNER=9999                                  # nobody
 ROOT=0
 POLL=5
@@ -183,7 +187,7 @@ run)
     clock() {
         clock_at=$(up)
         unsafe > /dev/null && return 0
-        $RUNAS root $AS_GROUPS $BIN clock sync < /dev/null > $CLOCK_OUT 2> /dev/null &
+        $RUNAS root $CLOCK_GROUPS $BIN clock sync < /dev/null > $CLOCK_OUT 2> /dev/null &
         c=$! i=0
         while kill -0 $c 2>/dev/null; do
             [ $i -lt $CLOCK_WAIT ] || { kill -KILL $c 2>/dev/null; wait $c 2>/dev/null; rm -f $CLOCK_OUT; say "clock: no answer within $CLOCK_WAIT s, left as it is"; return 0; }
