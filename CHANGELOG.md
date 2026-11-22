@@ -2,6 +2,13 @@
 
 What changed for people using the Echo, newest first. Details and measurements are in [PLAN.md](PLAN.md).
 
+## 2026-11-21
+
+- **portos-echo's bridge can read the Echo's camera shutter, so camera snapshots work.** The bridge checks the
+  shutter switch before a snapshot, and that switch is an input device only the `input` group may read. Without the
+  group every snapshot failed with a camera error. The bridge now starts as nobody with groups 3990, inet and input.
+  The firewall still lets only group 3990 out, and the clock sync keeps its old groups (3990 and inet).
+
 ## 2026-11-19
 
 - **The Echo Shows record through the call pipeline, which takes the Echo's own voice out of the microphone.** The
