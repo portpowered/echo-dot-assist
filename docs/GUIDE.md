@@ -1050,6 +1050,10 @@ one `played` after discard. Flush without a reply, repeated flush/end and an old
 no-ops. Start a replacement with `audio-start`. `hassmic-continue` remains a compatibility hint; it no longer decides
 whether a duplex run ends. The new commands are ignored without `-D`; ESPHome behavior is unchanged.
 
+Send `hassmic-thinking` with `{"thinking": true}` while the client's agent works on an answer: the eyes and the ring
+think, over listening and over an open reply, until `{"thinking": false}` or the end of the run. It is display only;
+the microphone, the reply and the run are untouched.
+
 The device retains a safety watchdog for stalled clients, including during playback. `run-satellite` may carry
 `{"hassmic_failsafe_seconds":30}` in its data object (integer 1..2147483647). Omission selects 30 seconds. Invalid
 values are logged and leave the current valid value unchanged. Reconnecting resets the default. Valid transcript,
