@@ -27,4 +27,8 @@ int  wy_write(int fd, const char *type, const char *data, const void *payload, s
 int  wy_json_int(const char *json, const char *key, long *out);
 int  wy_json_str(const char *json, const char *key, char *out, size_t outsz);
 int wy_failsafe_seconds(const char *json);                  /* 30 omitted, -1 invalid */
+/* hassmic-set-volume's "volume", a whole number 0..100, and hassmic-set-output-mute's "mute", true 1 / false 0: -1
+ * when missing or anything else (101, -1, 1.5, "30", 1 for true), checked as strictly as the watchdog's */
+int wy_speaker_volume(const char *json);
+int wy_output_mute(const char *json);
 #endif

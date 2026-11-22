@@ -112,6 +112,9 @@ int  core_bluetooth(int set);                   /* same; -B on the command line:
 int  core_dnd(int set);                          /* same: do not disturb, announcements are dropped (the protocol checks) */
 int  core_volume(void);
 void core_set_volume(int percent);
+/* Output mute (a Wyoming client's, hassmic-set-output-mute): everything played is silent, the volume kept (main.c
+ * out_muted).  Not the microphones' mute (core_muted).  set: 0/1, or -1 to only read */
+int  core_output_mute(int set);
 /* Separate volumes (main.c says how; -1 reads): on/off, and per kind beside the music's (core_volume): its own volume
  * 0..100, whether it follows the music's instead, and by how many points above or below.  Off, all of it is core_volume */
 enum { VOL_ASSISTANT, VOL_SOUNDS, VOL_TIMERS, VOL_CALLS, VOL_KINDS };
